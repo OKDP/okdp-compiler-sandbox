@@ -48,3 +48,6 @@ local/
 .OIDC*
 *.bak
 *.draft
+
+# Local kubectl cache
+.kube/
