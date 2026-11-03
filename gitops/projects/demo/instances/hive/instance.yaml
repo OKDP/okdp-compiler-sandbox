@@ -1,0 +1,2 @@
+service: hive-metastore
+version: 4.0.1-1.0.0

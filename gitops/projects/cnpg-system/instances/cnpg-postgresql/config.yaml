@@ -1,0 +1,11 @@
+# cnpg-system/cnpg-postgresql: the OKDP package cnpg-postgresql
+# (catalog/cnpg-postgresql, sandbox-charts). The platform's database server, release
+# cnpg-system-cnpg-postgresql, on the CloudNativePG operator of the bootstrap: the
+# provider of the default class of database-server connections
+# (global.okdp.provisioning.database-server of platform.yaml). For each claim bound to
+# it, a database, its owner role and the role's credentials, published under the
+# claim's ID: the demo project's (demo.demo-<instance>.<field>). The claimers are in
+# other namespaces: their credentials cross through the platform's secret store. No
+# database of its own (Keycloak's is its own cluster, sandbox-charts'
+# bootstrap/keycloak/database.yaml).
+databases: []

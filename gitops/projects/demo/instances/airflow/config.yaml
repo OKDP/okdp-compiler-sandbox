@@ -1,0 +1,21 @@
+# The metadata database: db unset, a database of its own (the package's default), claimed
+# of cnpg-system/cnpg-postgresql; its connection string built from the claim's connection and
+# credentials (no metadataSecret). The DAGs' object store: the platform's S3
+# connection platform-s3, its credentials.
+storage: platform-s3
+oidcRoleMapping:
+  platform_admin: [Admin]
+  data_engineer: [Op]
+  data_scientist: [User]
+  business_analyst: [Viewer]
+  data_steward: [Viewer]
+  auditor: [Viewer]
+# The DAGs of okdp-examples.
+dagsGitSync:
+  enabled: true
+  repo: https://github.com/okdp/okdp-examples.git
+  branch: main
+  ref: main
+  depth: 1
+  subPath: airflow/dags
+  period: 60s

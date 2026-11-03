@@ -1,0 +1,2 @@
+service: strimzi-operator
+version: 1.2.0-1.0.0

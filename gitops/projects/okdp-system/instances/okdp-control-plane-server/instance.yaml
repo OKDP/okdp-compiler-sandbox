@@ -1,0 +1,2 @@
+service: okdp-control-plane-server
+version: 0.10.0-1.0.0

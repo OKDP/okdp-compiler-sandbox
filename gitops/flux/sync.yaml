@@ -1,0 +1,82 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+
+# Flux entry point, applied once, from the okdp-sandbox checkout, after Flux itself (a
+# dependency of the platform, README step 5b):
+#   kubectl apply -f gitops/flux/sync.yaml
+# GitRepository okdp-gitops is the output repository, the only one Flux reads,
+# authenticated with the Secret okdp-gitops-reader (secretRef), created by
+# scripts/configure.sh --push (forgejo_engine_secrets):
+# okdp-deployments in the mono topology (the sources and the output), okdp-output in io
+# and split; compiled/ at its root. scripts/configure.sh --topology rewrites its URL.
+# The Kustomization okdp syncs the whole compiled tree: compiled/projects/
+# kustomization.yaml, which okdp-compiler's Flux target writes, lists the projects;
+# each project's, its instances and its manifests (project/); each instance's, its
+# HelmRelease and values ConfigMap in okdp-releases. The project's manifests: its
+# Namespace with its Pod Security labels, the ServiceAccount and SecretStore of the
+# platform's secret store in it, and, for a project that is not one of the
+# platform's own (global.okdp.policy.privileged of platform.yaml), the
+# ServiceAccount project-<p> in okdp-releases, bound to every verb of namespace <p>
+# only, as which helm-controller installs its releases (serviceAccountName); the
+# platform's own projects' releases are helm-controller's. kustomize-controller
+# applies the Namespaces and the RBAC first. Not generated, not in the output
+# repository.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: okdp-releases
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: okdp-gitops
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
+  ref:
+    branch: main
+  secretRef:
+    name: okdp-gitops-reader
+---
+# No wait: one broken instance must not block the others; a HelmRelease waits for the
+# releases it depends on (dependsOn), and retries until the CRDs of an operator exist.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: okdp
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  sourceRef:
+    kind: GitRepository
+    name: okdp-gitops
+  path: ./compiled/projects
+  prune: true
+  # A project's namespace is kept when the project is removed (its volumes with it,
+  # until an administrator deletes it), as Argo CD's Delete=false: never pruned.
+  patches:
+    - target:
+        kind: Namespace
+      patch: |
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: not-used
+          annotations:
+            kustomize.toolkit.fluxcd.io/prune: disabled

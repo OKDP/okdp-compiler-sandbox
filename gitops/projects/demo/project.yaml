@@ -1,0 +1,7 @@
+# The context of the demo project's instances (level 1, over platform.yaml): its
+# settings under global, its classes beside the platform's (global.okdp.provisioning),
+# its connections and its named claims (claims.<name>: {contract, class or provider,
+# request}, shared by its instances). The demo needs none of its own: its services claim
+# databases of their own of the platform's class, and their object store is the
+# platform's connection platform-s3.
+description: Demonstration project, full data chain

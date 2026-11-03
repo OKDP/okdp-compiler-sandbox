@@ -1,0 +1,34 @@
+# okdp-system/okdp-control-plane-server: the OKDP package okdp-control-plane-server
+# (platform-charts catalog). The console's API: it commits to
+# the deployments repositories served by Forgejo (a dependency of the platform,
+# sandbox-charts' bootstrap/forgejo) and reads the cluster.
+gitops:
+  # The mono topology: one deployments repository, the sources and the compiled tree at
+  # its root (GITOPS_REPO_URL, GITOPS_BRANCH). scripts/configure.sh --topology
+  # io|split adds topology (the repositories of the platform, of the projects and of
+  # the compiled tree: GITOPS_CONFIG), which takes over, and for split
+  # forgejoTokenSecret (the Secret configure.sh --push creates).
+  repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
+  branch: main
+  # argocd or flux: set it to the engine that deploys this repository.
+  engine: argocd
+  # The Forgejo user okdp-gitops, not an admin, which writes to the repositories of the
+  # topology only: scripts/configure.sh --push creates it and writes this Secret in
+  # the server's namespace (and the CI runner's), never in Git.
+  credentialsSecret: okdp-gitops-bot
+  # The upstream charts of the instances, pulled for the checks of each compile.
+  chartCacheDir: /var/cache/okdp/charts
+# User and group management through the Keycloak Admin API (URL and realm from the
+# platform OIDC issuer), as the realm's client okdp-control-plane, its credentials the
+# Secret okdp-system/local-secrets-provider reads from the platform's secret store
+# (platform/keycloak/okdp-control-plane, written at the bootstrap). Self-signed sandbox
+# certificate.
+keycloak:
+  credentialsSecret:
+    name: okdp-control-plane-keycloak
+  tlsInsecure: true
+# TODO(okdp-compiler): temporary registry, revert to quay.io/okdp once the OKDP images are published there.
+# TODO(okdp-compiler): the image must be a server that compiles the instances it
+# writes (okdp-control-plane-server, okdp-compiler branch): none is published yet;
+# scripts/e2e-kind.sh builds one (E2E_SERVER_IMAGE).
+imageRepository: repo.alliage.io:8082/okdp/images/okdp-control-plane-server

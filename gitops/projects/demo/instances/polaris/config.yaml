@@ -1,0 +1,13 @@
+# The metastore database: db unset, a database of its own (the package's default),
+# claimed of cnpg-system/cnpg-postgresql. The catalogs' store: the platform's S3 connection
+# platform-s3, its credentials (STS and the catalog-side Iceberg operations).
+storage: platform-s3
+realm: sandbox
+# Polaris principals: Polaris does not authenticate Keycloak clients, it keeps its own
+# principals. adm lets the Keycloak user adm open the Polaris console (formerly created by
+# project-demo/60-polaris-catalog-job.yaml).
+principals:
+  - name: service-account-svc-polaris-api-admin
+    roles: [service_admin, catalog_admin]
+  - name: adm
+    roles: [service_admin, catalog_admin]

@@ -1,0 +1,7 @@
+# Optional, k8ssandra-operator/k8ssandra-operator: the OKDP package k8ssandra-operator
+# (catalog/k8ssandra-operator, community-charts), K8ssandra and cass-operator, the
+# Cassandra operators, which the console's Database service k8ssandra needs. Installed
+# once per platform: it owns cluster-wide CRDs and watches every namespace (its
+# package's defaults). Move the project directory optional/projects/k8ssandra-operator
+# to projects/ before deploying k8ssandra.
+{}

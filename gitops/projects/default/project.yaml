@@ -1,0 +1,5 @@
+# A project of the platform, without user members: the namespace of its instances.
+# Its context (level 1, over platform.yaml): its settings under global, its classes
+# beside the platform's (global.okdp.provisioning), its connections and its named
+# claims; none here.
+description: The Spark RBAC of the default namespace

@@ -1,0 +1,58 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+
+# The instances: the Application <project>-<instance> okdp-compiler's Argo CD target
+# writes for each, compiled/projects/<project>/instances/<release>/application.yaml
+# (the umbrella chart of that directory in the output repository, with its
+# instance.values.yaml), applied by this Application (app of apps), from the output
+# repository only. Each belongs to the AppProject project-<project>, of the project's
+# manifests (projects.yaml): the namespace <project> only and no cluster-scoped kind,
+# unless the project is one of the platform's own (global.okdp.policy.privileged of
+# platform.yaml). An Application applied before its AppProject or its namespace
+# exists is retried.
+# Their sync waves follow the instances each waits for (references, claims): a wave is
+# applied when the Applications of the previous ones are Healthy, which needs the health
+# assessment of Applications in argocd-cm (bootstrap/argocd-cm-patch.yaml). An
+# instance applied before the CRDs of its operator is retried.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: okdp-instances
+  namespace: argocd
+spec:
+  project: okdp
+  source:
+    repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
+    targetRevision: main
+    path: compiled/projects
+    directory:
+      recurse: true
+      include: '*/instances/*/application.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      # Unlimited: an instance may wait for another on a first install.
+      limit: -1
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

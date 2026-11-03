@@ -1,0 +1,9 @@
+# The event logs: s3a://okdp/event-logs, in the bucket of the platform's S3 connection
+# platform-s3 (the prefix seeded by the store's bootstrap), read with the connection's
+# credentials. The Spark jobs write there (okdp-examples' sparkEventsLogDir).
+storage: platform-s3
+roleMapping:
+  admin_groups: [platform_admin]
+  history_admin_groups: [platform_admin, auditor]
+  modify_groups: [platform_admin, data_engineer]
+  view_groups: [platform_admin, data_engineer, data_scientist, data_steward, business_analyst]

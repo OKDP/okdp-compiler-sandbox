@@ -1,0 +1,14 @@
+# The metadata database: metadataDb unset, a database of its own (the package's
+# default), claimed of cnpg-system/cnpg-postgresql. The examples are off: no examples database.
+# Without a mapping every user lands in Public and Superset refuses all.
+oidcRoleMapping:
+  platform_admin: [Admin]
+  data_engineer: [Alpha, sql_lab]
+  data_scientist: [Alpha, sql_lab]
+  business_analyst: [Gamma]
+  data_steward: [Gamma, sql_lab]
+  auditor: [Gamma]
+datasources:
+  - {name: trino-bronze, trino: trino, catalog: bronze}
+  - {name: trino-silver, trino: trino, catalog: silver}
+  - {name: trino-gold, trino: trino, catalog: gold}

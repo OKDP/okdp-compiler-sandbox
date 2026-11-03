@@ -1,0 +1,5 @@
+# The metastore database: db unset, a database of its own (the package's default),
+# claimed of cnpg-system/cnpg-postgresql. The warehouse: the bucket of the platform's S3
+# connection platform-s3 (okdp), read with the connection's credentials, which also
+# reach bronze, where the external tables of okdp-examples live.
+storage: platform-s3

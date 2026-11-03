@@ -1,0 +1,2 @@
+service: spark-operator
+version: 2.5.2-1.0.0

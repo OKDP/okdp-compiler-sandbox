@@ -1,0 +1,28 @@
+# The catalogs' store: the platform's S3 connection platform-s3, its credentials.
+# The medallion layout of okdp-examples: bronze is the hive catalog (the hive-metastore
+# instance hive, its output named after it), silver and gold are warehouses of the Polaris
+# instance polaris provisioned by okdp-examples (gitops/optional/), which also creates the
+# demo warehouse.
+hiveCatalogs:
+  - name: bronze
+    metastore: hive
+    storage: platform-s3
+icebergCatalogs:
+  # Polaris credentials of the root principal (demo-polaris-root).
+  - name: iceberg
+    catalog: polaris
+    storage: platform-s3
+    warehouse: demo
+    oidcSecretRef: demo-polaris-root
+  - name: silver
+    catalog: polaris
+    storage: platform-s3
+    warehouse: silver
+    oidcSecretRef: demo-polaris-root
+  - name: gold
+    catalog: polaris
+    storage: platform-s3
+    warehouse: gold
+    oidcSecretRef: demo-polaris-root
+# The reference OPA policy only knows named users, which the sandbox does not provision.
+enableOPA: false

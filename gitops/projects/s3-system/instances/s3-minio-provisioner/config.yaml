@@ -1,0 +1,11 @@
+# s3-system/s3-minio-provisioner: the OKDP package s3-minio-provisioner
+# (catalog/s3-minio-provisioner, sandbox-charts). The provider of the default class
+# of s3 connections (global.okdp.provisioning.s3 of platform.yaml), release
+# s3-system-s3-minio-provisioner, on RustFS of the bootstrap through MinIO's admin
+# API: for each claim bound to it, a bucket named after the claim's ID, a policy and a
+# user limited to it, the user's keys generated in this namespace and crossing to the
+# claimer's through the platform's secret store, the paths the claim requests seeded;
+# published under the claim's ID. It deploys no store, and nothing when no claim is
+# bound to it (the sandbox's services name platform-s3: no package claims a bucket by
+# default).
+store: rustfs

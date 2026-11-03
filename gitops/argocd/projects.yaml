@@ -1,0 +1,90 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+# The projects' manifests: one Application okdp-project-<p> per compiled project,
+# compiled/projects/<p>/ (the compile writes it for every project with an
+# instance), which applies compiled/projects/<p>/project/, what okdp-compiler's
+# Argo CD target writes for the project, as plain files (no Helm, no Kustomize):
+#   namespace.yaml     Namespace <p>, its Pod Security labels ("privileged" for the
+#                      platform's own projects, global.okdp.policy.privileged of
+#                      platform.yaml; "baseline" enforced for the others), kept when
+#                      the project is removed (Delete=false);
+#   secret-store.yaml  the ServiceAccount okdp-secrets and the SecretStore
+#                      okdp-secrets of <p>, through which it reaches the platform's
+#                      secret store (global.okdp.secrets);
+#   appproject.yaml    AppProject project-<p> in argocd, which the Applications of
+#                      its instances name: sources the output repository; destined
+#                      to namespace <p> only, no cluster-scoped kind, for a project
+#                      that is not the platform's; every namespace and kind for one
+#                      of the platform's own.
+# The same directory holds the files of the Flux target (kustomization.yaml,
+# service-account.yaml, the identity of helm-controller in okdp-releases), which
+# Argo CD does not apply: only the three files above are included. The
+# Applications are of the entry point's AppProject okdp, which may write the
+# Namespaces and the AppProjects (project.yaml); the instances' Applications wait,
+# retried, for their AppProject and their namespace. Argo CD reads the output
+# repository only. <p> is the directory name, never a value read from a file of
+# the project.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: okdp-projects
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
+        revision: main
+        directories:
+          - path: compiled/projects/*
+  template:
+    metadata:
+      name: 'okdp-project-{{ .path.basename }}'
+      # Not okdp.io/project: the console lists the services of a project by that label.
+      labels:
+        okdp.io/appproject: 'project-{{ .path.basename }}'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: okdp
+      source:
+        repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
+        targetRevision: main
+        path: 'compiled/projects/{{ .path.basename }}/project'
+        # A plain directory, explicitly: Argo CD would read it as a Kustomize
+        # application (the Flux target's kustomization.yaml).
+        directory:
+          include: '{namespace.yaml,secret-store.yaml,appproject.yaml}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: argocd
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          # Server-side, as the instances' Applications: an existing namespace
+          # (kube-system, default) gets its labels, its other fields left alone.
+          - ServerSideApply=true
+        retry:
+          # Unlimited, as the instances' Applications (instances.yaml).
+          limit: -1
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 5m

@@ -1,0 +1,24 @@
+# A project of the platform, without user members: the namespace of its instances.
+# Its context (level 1, over platform.yaml): the S3 store its provisioner provisions
+# the claims of buckets on, a connection of its own, which only its instances
+# reference.
+description: The provider of the claims of buckets on the platform's S3 store
+# RustFS of the bootstrap (sandbox-charts' bootstrap/rustfs), as platform-s3 of
+# platform.yaml, with another identity: the provisioning identity okdp-provisioner
+# the RustFS release generates (Secret rustfs/rustfs-provisioner), allowed to create
+# buckets, users and policies, nothing on the objects. OpenBao's init writes it under
+# s3-system/s3-provisioner (sandbox-charts' bootstrap/openbao/init.sh,
+# S3_PROVISIONER_NAMESPACE), a key of this namespace, which no other namespace reads:
+# it is as trusted as the store's root (it can give any user any policy). Its
+# instances read it into the Secret <release>.rustfs-credentials of this namespace.
+connections:
+  rustfs:
+    contract: s3
+    description: RustFS of the bootstrap, its provisioning identity
+    apiUrl: https://s3.okdp.sandbox
+    internalUrl: http://rustfs-svc.rustfs.svc.cluster.local:9000
+    consoleUrl: https://s3-console.okdp.sandbox
+    region: us-east-1
+    pathStyle: true
+    secretRef:
+      remoteKey: s3-system/s3-provisioner

@@ -1,0 +1,2 @@
+service: k8ssandra-operator
+version: 1.33.0-1.0.0

@@ -1,0 +1,6 @@
+# Optional, strimzi/strimzi-operator: the OKDP package strimzi-operator
+# (catalog/strimzi-operator, community-charts), Strimzi, the Kafka operator, which the
+# console's Streaming service strimzi needs. Installed once per platform: it owns
+# cluster-wide CRDs and watches every namespace (its package's defaults). Move the
+# project directory optional/projects/strimzi to projects/ before deploying strimzi.
+{}

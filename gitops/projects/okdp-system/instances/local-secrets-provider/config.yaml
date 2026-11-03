@@ -1,0 +1,27 @@
+# okdp-system/local-secrets-provider: the OKDP package local-secrets-provider
+# (sandbox-charts), the sandbox's stand-in for a secret manager: Secrets whose
+# credentials are never in Git, generated once in the cluster by External Secrets
+# (generate) or read by it from the platform's secret store (remoteKey), their static
+# keys in data, replicated to the namespaces an entry's replicateTo names
+# (kubernetes-replicator, installed at the bootstrap).
+# The Forgejo credentials are not here: scripts/configure.sh --push generates them and
+# writes each to the namespaces that use it only (Forgejo and its runner, forgejo,
+# okdp-system/okdp-control-plane-server). The platform's secret store, through which the
+# credentials cross namespaces (the platform's S3 access key, the claims' credentials,
+# the secrets of the Keycloak realm's clients), is not this package's: OpenBao,
+# installed at the bootstrap (README, step 3), which each namespace reaches through the
+# SecretStore okdp-secrets the compiler writes in it.
+secrets:
+  # The Keycloak service-account client of the console's user and group management
+  # (okdp-control-plane-server keycloak.credentialsSecret; the client
+  # okdp-control-plane of the realm, sandbox-charts' bootstrap/keycloak/realm.yaml).
+  # Its secret is the realm's own: generated at the bootstrap (sandbox-charts'
+  # bootstrap/keycloak/client-secrets.sh), set on the client by the realm's import and
+  # written to the platform's secret store under
+  # okdp-system/keycloak/okdp-control-plane (sandbox-charts'
+  # bootstrap/openbao/init.sh), where only okdp-system reads it (the policy's
+  # <namespace>/* path).
+  - name: okdp-control-plane-keycloak
+    remoteKey: okdp-system/keycloak/okdp-control-plane
+    properties: [client_secret]
+    data: {client_id: okdp-control-plane}

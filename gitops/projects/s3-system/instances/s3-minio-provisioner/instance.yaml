@@ -1,0 +1,2 @@
+service: s3-minio-provisioner
+version: 1.0.0-1.0.0

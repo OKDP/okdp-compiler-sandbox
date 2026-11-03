@@ -1,0 +1,212 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+# The platform: the context of every instance of every project, level 0 of
+# okdp-compiler's tree, reviewed with the platform (no project.yaml, no instance may
+# change a value set here): global.okdp, the platform's settings (the ingress, TLS, the
+# OIDC provider, the secret store, the classes of the claims, the platform's own
+# projects), and the platform's
+# connections, which every instance references by name. The platform's dependencies,
+# installed with helm before anything compiled (bootstrap/, README step 3), are reached
+# through these settings and connections. The console's service catalog is not here:
+# see catalogs.yaml. The control plane server reads this file from Git.
+global:
+  okdp:
+    # The platform's ingress controller and certificate issuer (tls.clusterIssuer
+    # below), by the names every service and the bootstrap's dependencies use: the
+    # bootstrap's ingress-nginx (class nginx) and cert-manager (the cluster issuer
+    # default-issuer of sandbox-charts' bootstrap/cert-issuers), or the cluster's own
+    # under these names.
+    ingress:
+      suffix: okdp.sandbox
+      className: nginx
+
+    # Keycloak, a dependency of the platform installed at the bootstrap
+    # (sandbox-charts' bootstrap/keycloak): the platform's connection to it is these
+    # settings. The 5 URLs are maintained by hand (changing the realm or the suffix
+    # means changing all five). clientId is the console's own client (okdp-ui),
+    # declared in the Keycloak realm (sandbox-charts' bootstrap/keycloak/realm.yaml)
+    # whatever clientProvisioning says. clientProvisioning: how the services get their
+    # OAuth clients.
+    #   dcr (the sandbox default): each service registers its client in Keycloak with its
+    #     oidc-dcr Job (anonymous dynamic client registration, the realm's anonymous
+    #     policies) and reads it from Secret <release>-<namespace>-dcr.
+    #   existing (the alternative): the clients are created in Keycloak beforehand
+    #     (the realm's clients) and their credentials put in Secrets creds-<release>-oauth2
+    #     (projects/demo/instances/secrets, each client_secret the realm's, generated at
+    #     the bootstrap and read from the platform's secret store,
+    #     platform/keycloak/<client>; JupyterHub's generated with its crypt key); drop
+    #     the dcr block.
+    oidc:
+      enabled: true
+      issuerUri: https://keycloak.okdp.sandbox/realms/master
+      clientId: okdp-ui
+      authUrl: https://keycloak.okdp.sandbox/realms/master/protocol/openid-connect/auth
+      tokenUrl: https://keycloak.okdp.sandbox/realms/master/protocol/openid-connect/token
+      jwksUri: https://keycloak.okdp.sandbox/realms/master/protocol/openid-connect/certs
+      userinfoUrl: https://keycloak.okdp.sandbox/realms/master/protocol/openid-connect/userinfo
+      displayName: keycloak
+      scope: "openid profile email groups"
+      usePKCE: true
+      # Self-signed sandbox certificate the server pod does not carry a CA for.
+      # SANDBOX ONLY: disables TLS verification of the OIDC provider. Must be false in
+      # production (give the pods the CA bundle instead, e.g. trust-manager's certs-bundle).
+      insecureSkipVerify: true
+      clientProvisioning: dcr
+      dcr:
+        registrationUrl: https://keycloak.okdp.sandbox/realms/master/clients-registrations/openid-connect
+        authMethod: initialAccessToken
+
+    proxy:
+      httpProxy: ""
+      httpsProxy: ""
+      noProxy: ""
+
+    # clusterIssuer: the cert-manager ClusterIssuer of the services' certificates
+    # (cert-manager.io/cluster-issuer of their ingresses). caBundleSecret: the Secret
+    # of the platform's CA bundle (keys ca.crt and bundle.p12) the services mount to
+    # trust the platform's certificates (Keycloak's): the one the bootstrap's
+    # trust-manager writes in every namespace (sandbox-charts'
+    # bootstrap/trust-manager/bundle.yaml), or a cluster's own trust distribution
+    # under this name.
+    tls:
+      clusterIssuer: default-issuer
+      caBundleSecret: certs-bundle
+
+    storageClass:
+      data: standard
+      workspace: standard
+
+    # The classes of the claims: a reference that claims its connection (a database of
+    # its own) is provisioned by the provider of its class, the default one unless it
+    # names another; a project adds classes of its own (its project.yaml). The provider
+    # is <namespace>/<instance> (or the release, <namespace>/<project>-<instance>):
+    #   database-server  the instance cnpg-postgresql of the project cnpg-system, a
+    #                    database, its owner role and its credentials per claim.
+    #   s3               the instance s3-minio-provisioner of the project s3-system,
+    #                    a bucket, a policy and a user limited to it per claim, on
+    #                    RustFS of the bootstrap (not OKDP's) through MinIO's admin
+    #                    API. No package claims a bucket by default: the services
+    #                    name the platform's connection platform-s3 (below), and a
+    #                    claim ({} in place of a connection's name) gets a bucket of
+    #                    its own.
+    # A provider serves the claims of another namespace with its consent: a class of
+    # this file routes every namespace's claims to its provider, the platform's
+    # decision, nothing more needed (standard: the demo's databases, of
+    # cnpg-system; its buckets, of s3-system). A class a project adds (its project.yaml), or a claim naming
+    # its provider (provider: <namespace>/<instance>), of another namespace is
+    # refused unless the provider lists the claimer's namespace among its claimers:
+    # claimers: [<namespace>, ...], or ["*"], in its instance.yaml (else its
+    # package's provisions). No project of the sandbox does: no provider lists
+    # claimers.
+    provisioning:
+      database-server:
+        default: standard
+        classes:
+          standard: {provider: cnpg-system/cnpg-postgresql}
+      s3:
+        default: standard
+        classes:
+          standard: {provider: s3-system/s3-minio-provisioner}
+
+    # The platform's secret store, through which credentials cross namespaces: the
+    # platform's S3 access key (the connection platform-s3), the claims' credentials
+    # (the provider's namespace is not its claimers'). OpenBao, installed at the
+    # bootstrap (sandbox-charts' bootstrap/openbao, README step 3), reached by
+    # External Secrets: with provider set, the compiler writes in each project's
+    # namespace a ServiceAccount (serviceAccount) and a SecretStore named store with
+    # this provider, External Secrets' SecretStore spec.provider verbatim, and its
+    # PushSecrets and ExternalSecrets name that SecretStore. The store signs in as the
+    # namespace's ServiceAccount (OpenBao's Kubernetes auth, role okdp) and gets
+    # OpenBao's policy okdp, templated on that namespace (sandbox-charts'
+    # bootstrap/openbao/init.sh): a namespace writes <namespace>/* (a provider, the
+    # credentials of each claim under <namespace>/<claim ID>; a project's own
+    # connections, their keys), reads +/<namespace>.* (a claimer, its claims from any
+    # provider) and platform/* (the platform's keys, written at the bootstrap),
+    # nothing else; the namespace platform is reserved. A Vault, or a cloud secret
+    # manager, takes OpenBao's place: its provider here, the same policy on its side.
+    # Without provider, store is a ClusterSecretStore the platform created: one
+    # identity for every namespace, one trust domain. The refresh interval of the
+    # ExternalSecrets and PushSecrets is the compiler's default (refreshInterval, 1h).
+    secrets:
+      store: okdp-secrets
+      serviceAccount: okdp-secrets
+      provider:
+        vault:
+          server: http://openbao.openbao.svc.cluster.local:8200
+          path: okdp
+          version: v2
+          auth:
+            kubernetes:
+              mountPath: kubernetes
+              role: okdp
+              serviceAccountRef:
+                name: okdp-secrets
+
+    # The platform's own projects, by namespace: their instances install
+    # cluster-scoped objects (CRDs, cluster roles, webhooks), write other namespaces
+    # and run pods Pod Security "privileged" admits, with the engine's own identity
+    # (Argo CD: an AppProject of every namespace and every cluster-scoped kind; Flux:
+    # helm-controller's); their namespaces enforce Pod Security "privileged". Every
+    # other project is confined to its namespace: its objects there only, no
+    # cluster-scoped kind, its releases installed with an identity of that namespace
+    # (Argo CD: an AppProject of that namespace only; Flux: the ServiceAccount
+    # project-<namespace>), its namespace enforcing Pod Security "baseline" (the
+    # compiler's targets, projects/<namespace>/project/). Not here, confined: demo
+    # (a tenant), cnpg-system (the database server: a CloudNativePG cluster, its
+    # databases and PushSecrets, all in its namespace), s3-system (the provider of
+    # the buckets: a Job and the claims' Secrets and PushSecrets), default (the Spark
+    # ServiceAccount and Role of its namespace). The platform's prerequisites
+    # (cert-manager, ingress-nginx, the tools, the DNS, Forgejo and its CI runner) are
+    # the bootstrap's, not projects (README, step 3).
+    policy:
+      privileged:
+        # The Spark operator: CRDs, webhooks, cluster roles, the Spark jobs of every
+        # namespace.
+        - spark-operator
+        # The control plane server: a ClusterRole, it reads every project's
+        # namespace.
+        - okdp-system
+        # Optional (gitops/optional/projects), once moved into projects/: the
+        # operators' CRDs and cluster roles.
+        - strimzi
+        - k8ssandra-operator
+        - nifikop
+
+# The platform's connections, in the context of every instance, which references them
+# by name; no project or instance may redefine them.
+connections:
+  # The S3 store of the bootstrap, RustFS (sandbox-charts' bootstrap/rustfs): not
+  # OKDP's, installed with helm before anything compiled as a company installs its own
+  # (README, step 3); any S3-compatible store takes its place by changing these fields
+  # and the key below. Its credentials, keys accessKey and secretKey, are the
+  # platform's identity of the store, in the platform's secret store
+  # (global.okdp.secrets) under remoteKey, a key of platform/, the platform's, written
+  # at the bootstrap (sandbox-charts' bootstrap/openbao/init.sh, from the identity the
+  # RustFS release generates) and read by every namespace: the compiler gives each
+  # instance that references the connection an ExternalSecret of that key, into the
+  # Secret <release>.platform-s3-credentials of its namespace.
+  platform-s3:
+    contract: s3
+    description: The platform's S3 store, RustFS of the bootstrap
+    apiUrl: https://s3.okdp.sandbox
+    internalUrl: http://rustfs-svc.rustfs.svc.cluster.local:9000
+    consoleUrl: https://s3-console.okdp.sandbox
+    region: us-east-1
+    bucket: okdp
+    pathStyle: true
+    secretRef:
+      remoteKey: platform/s3

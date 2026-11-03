@@ -1,0 +1,6 @@
+# Optional, nifikop/nifikop: the OKDP package nifikop (catalog/nifikop,
+# community-charts), NiFiKop, the NiFi operator, which the console's Data Engineering
+# service nifi needs. Installed once per platform: it owns cluster-wide CRDs and watches
+# every namespace (its package's defaults). Move the project directory
+# optional/projects/nifikop to projects/ before deploying nifi.
+{}
