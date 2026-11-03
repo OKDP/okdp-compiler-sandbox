@@ -1,0 +1,190 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+# End-to-end install validation of the deployments repository (gitops/), with both
+# GitOps engines, as the README installs it:
+#
+#   1. kind cluster argocd: the platform's dependencies installed with helm
+#      (scripts/bootstrap.sh: cert-manager, the tools, ingress-nginx, the DNS,
+#      CloudNativePG, External Secrets and the secret store, Keycloak, RustFS,
+#      Forgejo and its CI runner), this commit, compiled, and the service
+#      catalogs pushed to Forgejo in the repositories of the topology
+#      (scripts/configure.sh --push), Argo CD, gitops/argocd/, wait for every
+#      Application (scripts/e2e-kind.sh up argocd);
+#   2. kind cluster fluxcd: the same with Flux and gitops/flux/sync.yaml;
+#   3. scripts/compare-engines.sh: the live objects of every compiled release
+#      must be identical under both engines (the dependencies, installed by helm
+#      the same way on both, are not compared).
+#
+# The platform's projects only (E2E_SKIP_PROJECTS=demo): two clusters with the demo
+# project do not fit a hosted runner (about 32 GB each). This workflow validates the
+# deployment layer, not the packages, which their catalogs test. The topology is mono
+# (one deployments repository, okdp/okdp-deployments), or the one chosen when run by
+# hand (io, split). The service catalogs of gitops/catalogs.yaml are cloned
+# next to this repository at their ref (full history of that branch: Forgejo refuses
+# a shallow push); nothing OKDP comes from a registry but the control plane images.
+# The control plane server is built from okdp-control-plane-server (with okdp-gitops,
+# whose compile checks what it writes) and loaded into kind; okdp-gitops is built from
+# its repository.
+
+name: Deploy validation (sandbox e2e, Argo CD and Flux)
+
+on:
+  pull_request:
+    paths:
+      - "gitops/**"
+      - "scripts/**"
+      - ".github/workflows/deploy-validation.yml"
+  push:
+    branches: [main]
+    paths:
+      - "gitops/**"
+      - "scripts/**"
+  workflow_dispatch:
+    inputs:
+      topology:
+        description: Repositories of the deployment (scripts/configure.sh --topology)
+        type: choice
+        options: [mono, io, split]
+        default: mono
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  E2E_DIR: ${{ github.workspace }}/.e2e
+  E2E_TOPOLOGY: ${{ inputs.topology || 'mono' }}
+  E2E_SKIP_PROJECTS: demo
+  E2E_TIMEOUT: "2400"
+  ARGOCD_VERSION: v3.4.2
+  FLUX_VERSION: v2.9.5
+  HELM_VERSION: v3.21.4   # same Helm 3 as OKDP/gh-workflows okdp-chart-ci.yml
+  KIND_VERSION: v0.33.0
+  # sha256 of kind-linux-amd64 ${KIND_VERSION}, from the release's
+  # kind-linux-amd64.sha256sum. Update both together.
+  KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+  # TODO(okdp-compiler): main, then a release, once the okdp-compiler branches land.
+  OKDP_CONTROL_PLANE_SERVER_REF: okdp-compiler
+  # TODO(okdp-compiler): main, then releases, once the feat/claim-provisioner branches
+  # land: the tree of okdp-compiler and okdp-gitops reduced to Git.
+  OKDP_GITOPS_REF: feat/claim-provisioner
+  OKDP_COMPILER_REF: feat/claim-provisioner
+  E2E_SERVER_IMAGE: okdp-control-plane-server:e2e
+  E2E_GITOPS_IMAGE: okdp-gitops:e2e
+  E2E_LOAD_IMAGES: okdp-control-plane-server:e2e okdp-gitops:e2e
+
+jobs:
+  deploy-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo ⚡️
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Free up disk space 📦
+        uses: okdp/gh-workflows/.github/actions/free-disk-space@v1
+
+      - name: Set up helm 🛠️
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Set up the Flux CLI 🛠️
+        uses: fluxcd/flux2/action@dd233c4fadef306a62b7893204f8e3817fecc2b2 # v2.9.5
+        with:
+          version: ${{ env.FLUX_VERSION }}
+
+      - name: Set up kind 🛠️
+        run: |
+          set -euo pipefail
+          curl -sSfLo "${RUNNER_TEMP}/kind" "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  ${RUNNER_TEMP}/kind" | sha256sum -c -
+          sudo install -m 0755 "${RUNNER_TEMP}/kind" /usr/local/bin/kind
+          kind version; helm version; flux version --client
+
+      - name: Clone okdp-control-plane-server, okdp-gitops, okdp-compiler and the service catalogs 📥
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${OKDP_CONTROL_PLANE_SERVER_REF}" https://github.com/OKDP/okdp-control-plane-server.git ../okdp-control-plane-server
+          git clone --depth 1 --branch "${OKDP_GITOPS_REF}" https://github.com/OKDP/okdp-gitops.git ../okdp-gitops
+          git clone --depth 1 --branch "${OKDP_COMPILER_REF}" https://github.com/OKDP/okdp-compiler.git ../okdp-compiler
+          # The catalogs, at the ref gitops/catalogs.yaml names, not shallow:
+          # e2e-kind.sh pushes them to the cluster's Forgejo (yq is preinstalled).
+          yq -r '.repositories[] | [.name, .ref] | @tsv' gitops/catalogs.yaml \
+            | while IFS=$'\t' read -r name ref; do
+                git clone --quiet --single-branch --branch "${ref}" "https://github.com/OKDP/${name}.git" "../${name}"
+              done
+
+      - name: Set up Go 🛠️
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: ../okdp-gitops/go.mod
+          cache: false
+
+      - name: Build okdp-gitops, its image (the CI runner's) and the control plane server image 🛠️
+        run: |
+          set -euo pipefail
+          (cd ../okdp-gitops && go build -o "${RUNNER_TEMP}/bin/okdp-gitops" ./cmd/okdp-gitops)
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+          # The build contexts the Dockerfiles copy from.
+          docker build -t "${E2E_GITOPS_IMAGE}" --build-context okdp-compiler=../okdp-compiler ../okdp-gitops
+          docker build -t "${E2E_SERVER_IMAGE}" \
+            --build-context okdp-compiler=../okdp-compiler --build-context okdp-gitops=../okdp-gitops \
+            ../okdp-control-plane-server
+
+      - name: Deploy with Argo CD 🚀
+        run: scripts/e2e-kind.sh up argocd
+
+      - name: Deploy with Flux 🚀
+        run: scripts/e2e-kind.sh up flux
+
+      - name: Compare the two engines ✅
+        env:
+          # Expected differences, reported but not counted:
+          # the control plane server follows the engine: gitops.engine
+          # (GITOPS_ENGINE, the config checksum) and its engine RBAC.
+          COMPARE_EXPECTED: >-
+            okdp-system/configmap/okdp-system-okdp-control-plane-server
+            okdp-system/deployment.apps/okdp-system-okdp-control-plane-server
+            okdp-system/clusterrole.rbac.authorization.k8s.io/okdp-system-okdp-control-plane-server
+        run: |
+          # The releases deployed: projects/<p>/instances/<i> is <p>/<p>-<i>, the
+          # projects of E2E_SKIP_PROJECTS left out.
+          releases=()
+          for f in gitops/projects/*/instances/*/instance.yaml; do
+            i="${f%/instance.yaml}"; i="${i##*/}"; p="${f#gitops/projects/}"; p="${p%%/*}"
+            [[ " ${E2E_SKIP_PROJECTS} " == *" $p "* ]] || releases+=("$p/$p-$i")
+          done
+          scripts/compare-engines.sh "$E2E_DIR/argocd.kubeconfig" "$E2E_DIR/flux.kubeconfig" "${releases[@]}"
+
+      - name: Diagnostics 🔎
+        if: failure()
+        run: |
+          for engine in argocd flux; do
+            kc="$E2E_DIR/$engine.kubeconfig"
+            [[ -f "$kc" ]] || continue
+            echo "======== $engine"
+            kubectl --kubeconfig "$kc" get pods -A || true
+            kubectl --kubeconfig "$kc" get applications.argoproj.io -A 2>/dev/null || true
+            kubectl --kubeconfig "$kc" get helmreleases.helm.toolkit.fluxcd.io -A 2>/dev/null || true
+            kubectl --kubeconfig "$kc" get kustomizations.kustomize.toolkit.fluxcd.io -A 2>/dev/null || true
+            kubectl --kubeconfig "$kc" get events -A --sort-by=.lastTimestamp | tail -n 100 || true
+          done
