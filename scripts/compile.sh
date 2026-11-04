@@ -16,19 +16,20 @@
 #
 
 # Compiles the tree of the layout (platform.yaml, projects/, the catalogs of
-# catalogs.yaml read from Git) with okdp-gitops compile: what the CI of the sources does
-# for each push, and the console checks for each change it commits. The compiled tree
+# catalogs.yaml read from Git) with okdp-gitops compile: what the CI of the output
+# repository does on its schedule, and the console checks for each change it commits. The compiled tree
 # is never written here: it goes to the output directory, the content of the output
 # repository at its root (compiled/, argocd/), the same in every topology.
 # scripts/configure.sh --push compiles the committed layout the same way and pushes it
 # to Forgejo; run this script to see what it would deploy, or to check that the layout
 # compiles after editing it.
 #
+#   --root DIR         the layout to compile (default: gitops/ of this repository)
 #   --output DIR       write the output tree into DIR (its argocd/ replaced by the
-#                      layout's, compiled/ rebuilt); without it, a temporary
-#                      directory, removed at exit: the layout compiles or not. DIR may
-#                      be --root, a layout holding its own output (a clone of the mono
-#                      deployments repository): compiled in place.
+#                      layout's, compiled/ rebuilt), a directory of its own, never the
+#                      layout nor in it (the output is never in a repository of the
+#                      sources); without it, a temporary directory, removed at exit:
+#                      the layout compiles or not.
 #   --catalog NAME=SRC read catalog NAME from SRC instead (repeatable; OKDP_CATALOGS
 #                      "NAME=SRC ..." too): a directory, read as it is (e.g. a checkout
 #                      with uncommitted changes), or a Git URL read at the catalog's
@@ -60,7 +61,7 @@ while [[ $# -gt 0 ]]; do
     --catalog) CATALOGS+=("$2"); shift 2 ;;
     --work) WORK_DIR="$2"; shift 2 ;;
     --) shift; EXTRA+=("$@"); break ;;
-    -h|--help) sed -n '18,43p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,44p' "$0"; exit 0 ;;
     *) echo "compile: unknown argument: $1" >&2; exit 2 ;;
   esac
 done

@@ -9,8 +9,9 @@ people and the console write the tree, a compile writes `compiled/`, and the eng
 deploy `compiled/`. `scripts/configure.sh --push` compiles the committed layout and
 puts the tree and the compiled tree on the sandbox's Forgejo, which holds the **only
 desired state** from then on: the console (through the control plane server) and the
-people commit the tree there, the **CI** of the sources compiles each push into the
-output (okdp-gitops, on the Forgejo Actions runner of the bootstrap,
+people commit the tree there, the **CI** of the output repository compiles the
+latest tree into the output every 2 minutes (okdp-gitops, on the Forgejo Actions
+runner of the bootstrap,
 [`forgejo-runner`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/forgejo-runner/values.yaml)), and Argo CD
 **or** Flux deploys it. The compiled tree is never in this repository. An instance
 names a **package** of a service catalog (a Git repository, [below](#service-catalogs)),
@@ -22,8 +23,10 @@ OpenBao, Forgejo, the engine) are not in the tree: they are installed with Helm 
 anything compiled ([`bootstrap/`](https://github.com/OKDP/sandbox-charts/tree/main/bootstrap), README step 3), and the tree reaches
 them through the platform's settings and connections ([`platform.yaml`](#platformyaml)).
 
-On Forgejo, the tree and the compiled tree live in one repository or in several: the
-**topology** ([below](#topologies)), chosen with `scripts/configure.sh`.
+On Forgejo, the tree lives in a platform repository and a projects repository (`io`,
+a small team) or a repository per project (`split`), the compiled tree in an output
+repository of its own, which the CI alone writes: the **topology**
+([below](#topologies)), chosen with `scripts/configure.sh`.
 
 - [Layout](#layout)
 - [Topologies](#topologies)
@@ -61,8 +64,8 @@ argocd/                           # Argo CD entry point (reads the output reposi
   project.yaml                    #   AppProject okdp (the entry point)
   root.yaml                       #   Application okdp (manages argocd/ itself); okdp-gitops reads
                                   #   its source, the repository of the Applications it writes
-  instances.yaml                  #   Application okdp-instances: the instances' Applications
-  projects.yaml                   #   ApplicationSet okdp-projects: the projects' manifests,
+  instances.yaml                  #   Application okdp.instances: the instances' Applications
+  projects.yaml                   #   ApplicationSet okdp.projects: the projects' manifests,
                                   #   compiled/projects/<p>/project/ (an AppProject per project)
   ingress.yaml                    #   Argo CD's UI at https://argocd.okdp.sandbox
   bootstrap/                      #   patches of the Argo CD configuration (applied once, by hand):
@@ -117,54 +120,93 @@ name, `<c>` a connection name.
 
 ## Topologies
 
-Each part of the layout may live in its own repository of the sandbox's Forgejo
-(organization `okdp`, `http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/<repository>.git`,
-branch `main`):
+Each part of the layout lives in a repository of the sandbox's Forgejo (organization
+`okdp`, `http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/<repository>.git`,
+branch `main`), the output always in a repository of its own:
 
-| Part | Content | `mono` | `io` | `split` |
-|---|---|---|---|---|
-| platform | `platform.yaml`, `catalogs.yaml`, `projects.yaml` (split) | `okdp-deployments`, its root | `okdp-input`, its root | `okdp-platform`, its root |
-| project `<p>` | `project.yaml`, `instances/` | `okdp-deployments`, `projects/<p>/` | `okdp-input`, `projects/<p>/` | `okdp-project-<p>`, its root |
-| output | `compiled/`, `argocd/` | `okdp-deployments`, its root | `okdp-output`, its root | `okdp-output`, its root |
+| Part | Content | `io` (the default) | `split` |
+|---|---|---|---|
+| platform | `platform.yaml`, `catalogs.yaml`, `projects.yaml` (split) | `okdp-platform`, its root | `okdp-platform`, its root |
+| project `<p>` | `project.yaml`, `instances/` | `okdp-projects`, `projects/<p>/` | `okdp-project-<p>`, its root |
+| output | `compiled/`, `argocd/` | `okdp-output`, its root | `okdp-output`, its root |
 
-- `mono` (the default): one deployments repository, `okdp-deployments`, the tree and
-  the output side by side at its root. It is not this repository, which only
-  bootstraps it.
+There is no topology of one repository for the sources and the output (the former
+`mono`): Forgejo grants write access per repository, not per path, and a writer of
+the output deploys anything, past every check of the compile. The repository is the
+unit of write permission, without the control plane: who writes a repository writes
+every file of it. Hence **who can do what**:
+
+- **the output** (`okdp-output`): the CI's account `okdp-gitops` alone pushes to its
+  `main` (a protected branch, its push whitelist), with the only token of the CI,
+  the output repository's own; the engines read it only. Nobody else writes it, the
+  admin and the people included.
+- **the platform** (`okdp-platform`, in both topologies): `platform.yaml` (the
+  platform's settings, the classes of the claims, the privileged projects, the
+  secret store) and `catalogs.yaml` (what may be deployed), the platform admins'
+  alone. Kept apart in io too: the team's write access stops at the projects.
+- **io, for a small team**: one repository for every project, `okdp-projects`. Every
+  writer of it writes every project, the platform's own ones among them
+  (`okdp-system`, the operators, the database server: privileged projects), so every
+  writer is trusted with all of them. `scripts/check.sh` warns of it.
+- **split, for bigger deployments**: a repository per project, `okdp-project-<p>`,
+  written by its team only; the permissions are per repository, per project. The
+  levels the compiler enforces (a project sets only what a project may set, an
+  instance never `global.okdp`) hold the platform's settings against a project's
+  files; the privileged projects' repositories are the platform admins'.
+
+In both, the sources hold no token and no workflow, the CI is the output
+repository's, and the control plane, when installed, writes the sources only (in the
+sandbox it still signs in as `okdp-gitops`, the CI's account, until it gets one of its
+own).
+
 - **Argo CD and Flux read the output repository only**: `argocd/` and `flux/sync.yaml`
   name it, and their paths are at its root (`./compiled/projects`) in every topology.
 - The control plane server reads the topology from its values
-  ([`okdp-control-plane-server`](projects/okdp-system/instances/okdp-control-plane-server/config.yaml)):
-  without `gitops.topology`, `gitops.repoURL` and `branch` are the mono repository
-  (the layout at its root, no `gitops.path`); with it, the topology file
-  (`GITOPS_CONFIG`) gives each part:
+  ([`okdp-control-plane-server`](projects/okdp-system/instances/okdp-control-plane-server/config.yaml)),
+  `gitops.topology`, required (there is no single repository, `gitops.repoURL`, any
+  more), its topology file (`GITOPS_CONFIG`), which gives each part:
 
   ```yaml
-  topology:
+  topology:                                                                            # io
+    platform: {url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-platform.git, branch: main, path: ""}
+    projects: {url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-projects.git, branch: main, path: "projects/{project}"}
+    output:   {url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git, branch: main, path: ""}
+  ```
+
+  ```yaml
+  topology:                                                                            # split
     platform: {url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-platform.git, branch: main, path: ""}
     projects: {url: "http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-project-{project}.git", branch: main, path: ""}
     output:   {url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git, branch: main, path: ""}
-    forgejo:  {url: http://forgejo-http.forgejo.svc.cluster.local:3000, owner: okdp}   # split
-  forgejoTokenSecret: okdp-forgejo-token                                               # split
+    forgejo:  {url: http://forgejo-http.forgejo.svc.cluster.local:3000, owner: okdp}
+  forgejoTokenSecret: okdp-forgejo-token
   ```
 
   `okdp-gitops compile --config <file>` reads the same file (a `url` may also be a
   local directory, read and written in place); `platform.path` is the directory of
-  `platform.yaml`.
+  `platform.yaml`. okdp-gitops refuses a topology whose output is a repository of the
+  sources.
 - A change, the console's or a person's, is a commit of the tree (platform or project
-  repository); the CI of that repository compiles it into the output repository
-  (`okdp: compile`, from the latest tree of every part), which the engines deploy. A
-  change that does not compile writes no output (the console refuses it before it
-  commits). `okdp-gitops compile --check` fails while the output is stale. The CI
-  reads the same topology file, without its `forgejo` section, carried by the
-  workflow of each repository of the sources (`scripts/configure.sh --push` writes
-  it); the runner (`forgejo/forgejo-runner`, the bootstrap's) has none.
+  repository); the next run of the CI of the output repository, every 2 minutes,
+  compiles it into the output repository (`okdp: compile`, from the latest tree of
+  every part, and `sources.yaml`, the revisions it compiled; a run whose sources did
+  not move stops early), which the engines deploy. A change that does not compile
+  writes no output (the console refuses it before it commits). `okdp-gitops compile
+  --check` fails while the output is stale. The CI reads the same topology file,
+  without its `forgejo` section, carried by the workflow of the output repository,
+  the only workflow (`okdp-gitops workflow --for output`, which
+  `scripts/configure.sh --push` writes); the runner (`forgejo/forgejo-runner`, the
+  bootstrap's) has none. The repositories of the sources hold no workflow and no
+  token: whoever pushes a workflow to a repository reads its secrets, and a token
+  that writes the output deploys anything, past every check of the compile.
 - `split`: `projects.yaml` lists the projects (`projects: [{name: demo}]`, a project may
   override the `url`, `branch` or `path` of the template), every project of the
   platform's among them, a repository each. The console creates a project's repository
   `okdp/okdp-project-<p>` through the Forgejo API (the token of Secret
   `okdp-forgejo-token`, of the user `okdp-gitops`, mounted at
-  `/etc/okdp/forgejo/token`), pushes its `project.yaml` and its CI
-  (`.forgejo/workflows/okdp-gitops.yaml`), and adds it to `projects.yaml`.
+  `/etc/okdp/forgejo/token`), pushes its `project.yaml` (no workflow, no secret, no
+  runner: the next run of the output's CI compiles it), and adds it to
+  `projects.yaml`.
 
 **This directory holds the tree and the entry points of every topology**, never the
 compiled tree: the topology changes where each part is pushed, the URL of `argocd/` and
@@ -177,10 +219,11 @@ git add -A gitops && git commit -m "chore: configure the sandbox"
 scripts/configure.sh --push             # the dependencies installed (README, step 3)
 ```
 
-`--topology mono|io|split` writes (io, split) or removes (mono) `gitops.topology` and,
-for split, `gitops.forgejoTokenSecret`; points `argocd/` and `flux/` at the output
-repository (`okdp-deployments` in mono, `okdp-output` otherwise); writes (split) or
-removes `projects.yaml`. `--show` prints the topology and its repositories.
+`--topology io|split` writes `gitops.topology` and, for split,
+`gitops.forgejoTokenSecret` (an older layout's `gitops.repoURL`, `branch` and `path`,
+the single repository of the former mono, removed); points `argocd/` and `flux/` at
+the output repository, `okdp-output`; writes (split) or removes `projects.yaml`.
+`--show` prints the topology and its repositories.
 
 `--push` compiles the committed layout (`HEAD`) into the output tree, as
 [`scripts/compile.sh`](#compiling-from-the-tree-to-compiled) does (nothing is pushed
@@ -188,25 +231,32 @@ when it does not compile), and puts it on Forgejo, through a `kubectl port-forwa
 the current context (or `FORGEJO_URL`), with the admin account of Forgejo
 ([`bootstrap/forgejo`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/forgejo/values.yaml): Secret
 `forgejo/okdp-forgejo-admin`, README step 3): it creates the organization `okdp` and
-the repositories (public: the engines and the console read them anonymously), copies
-the [service catalogs](#service-catalogs), then pushes:
+the repositories (private: the engines read the output with a read token of
+`okdp-gitops`, Secret `okdp-gitops-reader` of `argocd` and `flux-system`; the
+console and the CI read the sources and the catalogs as `okdp-gitops`), copies the
+[service catalogs](#service-catalogs), then pushes:
 
-| | mono | io | split |
-|---|---|---|---|
-| tree | `platform.yaml`, `catalogs.yaml`, `projects/` to `okdp-deployments` | the same, to `okdp-input` | `platform.yaml`, `catalogs.yaml`, `projects.yaml` to `okdp-platform`, `projects/<p>/` to `okdp-project-<p>` (each project of `projects.yaml`) |
-| output | `compiled/`, `argocd/` next to them, in the same commit | `compiled/`, `argocd/` to `okdp-output` | the same |
-| CI | `.forgejo/workflows/okdp-gitops.yaml` (`GITOPS_INSECURE_HTTP_HOSTS='*.svc.cluster.local' okdp-gitops workflow --config <topology>`, the topology in it, the token sent over `http://` to the cluster's services only, which the job's environment allows) at the root of each repository of the tree, its Actions enabled, its Actions secret `OKDP_GITOPS_TOKEN` a token of the user `okdp-gitops` (`write:repository`); the runner `okdp-gitops` registered for each of these repositories, never the organization (`forgejo forgejo-cli actions register --scope okdp/<repository>`, a random secret each, kept in Secret `forgejo/okdp-runner-registration`, a key per repository) | the same | the same |
-| writer | the user `okdp-gitops`, not an admin, in the team `okdp-gitops` that writes to `okdp-deployments`; its random password in Secret `okdp-gitops-bot` of `okdp-system` (the console), a token of it in the repositories' `OKDP_GITOPS_TOKEN` (the CI) | the same, writing to `okdp-input` and `okdp-output` | the same, writing to `okdp-platform`, the `okdp-project-<p>` and `okdp-output`, and allowed to create repositories |
-| token | | | a Forgejo access token of `okdp-gitops` for the server, in Secret `okdp-system/okdp-forgejo-token` (key `token`) |
+| | io | split |
+|---|---|---|
+| tree | `platform.yaml`, `catalogs.yaml` to `okdp-platform`, `projects/` to `okdp-projects` | `platform.yaml`, `catalogs.yaml`, `projects.yaml` to `okdp-platform`, `projects/<p>/` to `okdp-project-<p>` (each project of `projects.yaml`) |
+| output | `compiled/`, `argocd/` to `okdp-output` | the same |
+| CI | in the output repository only: `.forgejo/workflows/okdp-gitops.yaml` (`GITOPS_INSECURE_HTTP_HOSTS='*.svc.cluster.local' okdp-gitops workflow --for output --config <topology>`: every 2 minutes and on dispatch, the topology in it, the token sent over `http://` to the cluster's services only, which the job's environment allows), its Actions enabled, its Actions secret `OKDP_GITOPS_TOKEN` a token of the user `okdp-gitops` (`write:repository`), the only token of the CI; the runner `okdp-gitops` registered for it only, never a repository of the sources nor the organization (`forgejo forgejo-cli actions register --scope okdp/<output>`, a random secret, kept in Secret `forgejo/okdp-runner-registration`, key `<output>`); its `main` protected, `okdp-gitops` alone pushing there (push whitelist), no force push. The repositories of the sources: no workflow, no secret (an older sandbox's deleted), Actions off | the same |
+| writer | the user `okdp-gitops`, not an admin, in the team `okdp-gitops` that writes to `okdp-platform`, `okdp-projects` and `okdp-output` (the only account its `main` takes) and the team `okdp-gitops-read` that reads the catalogs; its random password in Secret `okdp-gitops-bot` of `okdp-system` (the console), a token of it in the output repository's `OKDP_GITOPS_TOKEN` (the CI) | the same, writing to `okdp-platform`, the `okdp-project-<p>` and `okdp-output`, and allowed to create repositories |
+| token | | a Forgejo access token of `okdp-gitops` for the server, in Secret `okdp-system/okdp-forgejo-token` (key `token`) |
 
 Each repository gets its part's files as one commit on top of its `main`
 (`okdp-sandbox <sha>: <subject>`); `--push` refuses when someone committed there since
 (the console, a person; the CI's compiles, `okdp: compile`, excepted: bring their
 changes into this repository first), unless `--force`, which replaces them. A push of
 the output that loses the race against the CI (which compiles the tree just pushed)
-is made again on top of it. `--dry-run` compiles, prints what would be done and keeps
-the parts it would push. The output pushed this way bootstraps the sandbox (the runner
-is one of its instances); from then on, the CI compiles each push of the tree.
+is made again on top of it. The sources are pushed as the admin, the output as
+`okdp-gitops`, the only account its `main` takes. `--dry-run` compiles, prints what
+would be done and keeps the parts it would push. The output pushed this way
+bootstraps the sandbox; from then on, the CI compiles the tree on its schedule.
+
+The console still writes the sources as `okdp-gitops`, the CI's account: whoever
+reads its Secret can push the output too, until the console gets a Forgejo account
+of its own, which writes the sources only.
 
 ## Service catalogs
 
@@ -454,15 +504,17 @@ them under `compiled/` as they are, and writes no engine file of its own.
 
 Who compiles: `okdp-gitops compile` ([okdp-gitops](https://github.com/OKDP/okdp-gitops):
 `make build`), always the whole tree:
-- the CI of the sources, on each push to a repository of the tree: its workflow
-  `.forgejo/workflows/okdp-gitops.yaml`, run by the Forgejo Actions runner
+- the CI of the output repository, every 2 minutes and when dispatched: its
+  workflow `.forgejo/workflows/okdp-gitops.yaml`, the only one, run by the Forgejo
+  Actions runner
   [`forgejo-runner`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/forgejo-runner/values.yaml), each run
   a new container of the okdp-gitops image (`okdp-gitops compile`, the topology of
-  the workflow, the token of the repository's `OKDP_GITOPS_TOKEN`, the chart cache a
-  volume of the runner's Docker daemon), commits
-  the output (`okdp: compile`); a push that does not compile writes nothing, and the
-  run fails (the **Actions** tab of the repository). The console commits the tree
-  only, once its compile passes;
+  the workflow, the token of the output repository's `OKDP_GITOPS_TOKEN`, the chart
+  cache a volume of the runner's Docker daemon), reads the latest sources, stops when
+  they did not move since the last compile (`sources.yaml` of the output), else
+  commits the output (`okdp: compile`); a tree that does not compile writes nothing,
+  and the run fails (the **Actions** tab of the output repository). The console
+  commits the tree only, once its compile passes;
 - `scripts/configure.sh --push` runs it on the committed layout and pushes the result
   (the bootstrap);
 - `scripts/compile.sh` runs it on the layout as it is, into an output directory, never
@@ -477,9 +529,10 @@ scripts/compile.sh --output /tmp/okdp-out   # the output tree --push would push
 
 It calls `okdp-gitops compile --config <the tree of this directory, the output
 directory> --catalog platform-charts=<dir> --catalog sandbox-charts=<dir> --catalog
-community-charts=<dir>`. A clone of the mono deployments repository holds its own
-output: `compile.sh --root DIR --output DIR` compiles it in place, for a change
-committed there by hand. A tree that does not compile (an invalid `instance.yaml`, a
+community-charts=<dir>`. `--root DIR` compiles another layout (a checkout of the
+repositories of the sources, put together); `--output DIR` is a directory of its own,
+never the layout nor in it: the output is never in a repository of the sources. A
+tree that does not compile (an invalid `instance.yaml`, a
 package missing from the catalogs, a missing connection, a parameter the package
 refuses, a claim no provider binds, a reference to an instance the project does not
 have) is reported whole, and nothing is written. The values are checked against each
@@ -524,7 +577,7 @@ helmrelease --force`.
 ### What the server writes, per action
 
 The tree in the platform or project repository, one commit; the CI compiles it into
-the output repository (the same repository in mono), the server writes no compiled
+the output repository, at its next run; the server writes no compiled
 file.
 
 | action | tree (the server's commit) | compiled/ (the CI's compile of it) |
@@ -557,16 +610,24 @@ kubectl -n argocd rollout restart deployment argocd-server
 
 1. The files of `argocd/` name the output repository (`scripts/configure.sh
    --topology` sets it). For another Git server, change the URL/branch there and in
-   `flux/`, and `gitops.repoURL` or `gitops.topology` of the server. Commit, push
+   `flux/`, and `gitops.topology` of the server. Commit, push
    (`scripts/configure.sh --push`): okdp-gitops writes the Applications of the
    instances because the output has `argocd/root.yaml`, with its source's repository
    and revision.
 2. `kubectl apply -n argocd -f gitops/argocd/`, from this repository: Application
    `okdp` then reads `argocd/` from the output repository.
 
+The entry points' own objects in the engines' namespaces take names no release,
+`<p>-<i>` (a DNS label, with a dash), can: `okdp`, `okdp.instances`, `okdp.projects`
+and `okdp.project.<p>` in `argocd`, `okdp` and `okdp-gitops` (the source the compiled
+HelmReleases name) in `flux-system`, where no project's object can be (the compile
+refuses a project of `argocd`, `flux-system` or `okdp-releases`). An Application
+`okdp-instances` would be the release of an instance `instances` of a project
+`okdp`, which would replace the app of apps and prune every Application it applies.
+
 Argo CD then manages `argocd/` itself (Application `okdp`), and one Application `<r>`
 per compiled instance: the `application.yaml` the compile writes in its directory,
-applied by the app of apps `okdp-instances` from the output repository
+applied by the app of apps `okdp.instances` from the output repository
 (`compiled/projects`, `*/instances/*/application.yaml`). An instance's Application has
 one source, the output repository at the instance's directory (the umbrella chart, its
 dependencies fetched from their repositories), `helm.valueFiles:
@@ -574,7 +635,7 @@ dependencies fetched from their repositories), `helm.valueFiles:
 orders it after the instances it waits for. It belongs to the AppProject `project-<p>`
 that okdp-compiler writes for the project, `compiled/projects/<p>/project/appproject.yaml`,
 applied with the project's Namespace and SecretStore by the Application
-`okdp-project-<p>` (ApplicationSet `okdp-projects`, one per `compiled/projects/<p>/`
+`okdp.project.<p>` (ApplicationSet `okdp.projects`, one per `compiled/projects/<p>/`
 directory, the files of `project/` as a plain directory, under the entry point's
 AppProject `okdp`). The AppProject keeps the project's Applications to the output
 repository and, unless the project is one of the platform's own
@@ -656,15 +717,16 @@ scripts/lib/                      # shared by the scripts (topology, catalogs, F
   the README's step 3; idempotent. `bootstrap/` is read as the catalogs are (at the
   `ref` of sandbox-charts in `catalogs.yaml`), or `--dir DIR` as it is. Needs kubectl,
   helm, yq v4, jq, awk and git.
-- `scripts/configure.sh [-i] [--engine argocd|flux] [--topology mono|io|split]`: sets
+- `scripts/configure.sh [-i] [--engine argocd|flux] [--topology io|split]`: sets
   `gitops.engine` of the control plane server; sets the [topology](#topologies).
   Without arguments on a terminal (or with `-i`) it asks, the current values being the
   defaults; `--show` prints them. Edits the layout only. `configure.sh --push
   [--force] [--dry-run]` then compiles the committed layout and puts it, its CI (the
-  workflow and its topology, the token `OKDP_GITOPS_TOKEN`, over `http://` to the
-  hosts of `CI_INSECURE_HTTP_HOSTS` only, `*.svc.cluster.local`) and the catalogs on the
-  sandbox's Forgejo, the CI runner registered for each repository of the sources
-  ([Topologies](#topologies)). Needs
+  output repository's workflow, on a schedule, and its topology, the token
+  `OKDP_GITOPS_TOKEN` of the output repository only, over `http://` to the hosts of
+  `CI_INSECURE_HTTP_HOSTS` only, `*.svc.cluster.local`) and the catalogs on the
+  sandbox's Forgejo, the CI runner registered for the output repository only, its
+  `main` pushed by `okdp-gitops` alone ([Topologies](#topologies)). Needs
   yq v4; `--push` also git, okdp-gitops, curl, jq and kubectl.
 - `scripts/compile.sh [--output DIR] [--catalog NAME=SRC]...`: `okdp-gitops compile`
   of the tree into the output tree DIR (a temporary directory without `--output`), the
@@ -693,7 +755,9 @@ scripts/lib/                      # shared by the scripts (topology, catalogs, F
   kind cluster: the platform's dependencies (`bootstrap.sh`), then the layout through
   its Forgejo (`configure.sh --push`, the topology `E2E_TOPOLOGY`), with the catalogs of
   `OKDP_CATALOGS` or next to this repository and the control plane and okdp-gitops
-  images of your choice (`E2E_SERVER_IMAGE`, `E2E_GITOPS_IMAGE`); then a plain commit of
-  the tree, pushed to Forgejo, must be compiled by the CI and deployed. See its header.
+  images of your choice (`E2E_SERVER_IMAGE`, `E2E_GITOPS_IMAGE`); then a push of the
+  admin to the output's `main` must be refused, and a plain commit of the tree, pushed
+  to Forgejo, must be compiled by the next scheduled run of the CI and deployed. See
+  its header.
 - `scripts/compare-engines.sh`: compares the live objects of releases between an Argo
   CD cluster and a Flux cluster, ignoring engine-specific metadata. See its header.

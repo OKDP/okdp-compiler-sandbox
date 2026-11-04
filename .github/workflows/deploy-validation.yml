@@ -31,9 +31,11 @@
 #
 # The platform's projects only (E2E_SKIP_PROJECTS=demo): two clusters with the demo
 # project do not fit a hosted runner (about 32 GB each). This workflow validates the
-# deployment layer, not the packages, which their catalogs test. The topology is mono
-# (one deployments repository, okdp/okdp-deployments), or the one chosen when run by
-# hand (io, split). The service catalogs of gitops/catalogs.yaml are cloned
+# deployment layer, not the packages, which their catalogs test. The topology is io
+# (okdp/okdp-platform, okdp/okdp-projects and the output okdp/okdp-output), or the
+# one chosen when run by hand (split); the CI of the output repository, on its
+# schedule, must compile a plain commit of the sources, and the output's main refuse
+# the admin's push. The service catalogs of gitops/catalogs.yaml are cloned
 # next to this repository at their ref (full history of that branch: Forgejo refuses
 # a shallow push); nothing OKDP comes from a registry but the control plane images.
 # The control plane server is built from okdp-control-plane-server (with okdp-gitops,
@@ -58,8 +60,8 @@ on:
       topology:
         description: Repositories of the deployment (scripts/configure.sh --topology)
         type: choice
-        options: [mono, io, split]
-        default: mono
+        options: [io, split]
+        default: io
 
 permissions:
   contents: read
@@ -70,7 +72,7 @@ defaults:
 
 env:
   E2E_DIR: ${{ github.workspace }}/.e2e
-  E2E_TOPOLOGY: ${{ inputs.topology || 'mono' }}
+  E2E_TOPOLOGY: ${{ inputs.topology || 'io' }}
   E2E_SKIP_PROJECTS: demo
   E2E_TIMEOUT: "2400"
   ARGOCD_VERSION: v3.4.2

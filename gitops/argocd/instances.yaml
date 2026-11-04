@@ -28,15 +28,20 @@
 # applied when the Applications of the previous ones are Healthy, which needs the health
 # assessment of Applications in argocd-cm (bootstrap/argocd-cm-patch.yaml). An
 # instance applied before the CRDs of its operator is retried.
+# Named with a dot, which no release, <project>-<instance> (a DNS label), can take:
+# an Application okdp-instances would be the one of the instance instances of a
+# project okdp, which would replace this one and prune every Application it applies.
+# The platform's own objects of the engines' namespaces (argocd, flux-system,
+# okdp-releases) all take a name no release can: a dot, or no dash (okdp).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: okdp-instances
+  name: okdp.instances
   namespace: argocd
 spec:
   project: okdp
   source:
-    repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
+    repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
     targetRevision: main
     path: compiled/projects
     directory:

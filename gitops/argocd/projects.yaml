@@ -14,7 +14,7 @@
 #  limitations under the License.
 #
 
-# The projects' manifests: one Application okdp-project-<p> per compiled project,
+# The projects' manifests: one Application okdp.project.<p> per compiled project,
 # compiled/projects/<p>/ (the compile writes it for every project with an
 # instance), which applies compiled/projects/<p>/project/, what okdp-compiler's
 # Argo CD target writes for the project, as plain files (no Helm, no Kustomize):
@@ -38,23 +38,27 @@
 # retried, for their AppProject and their namespace. Argo CD reads the output
 # repository only. <p> is the directory name, never a value read from a file of
 # the project.
+# The ApplicationSet and its Applications are named with a dot, which no release,
+# <project>-<instance> (a DNS label), can take: an Application okdp-project-<p> would
+# be the release of the instance project-<p> of a project okdp, which would replace
+# it (instances.yaml).
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
-  name: okdp-projects
+  name: okdp.projects
   namespace: argocd
 spec:
   goTemplate: true
   goTemplateOptions: ["missingkey=error"]
   generators:
     - git:
-        repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
+        repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
         revision: main
         directories:
           - path: compiled/projects/*
   template:
     metadata:
-      name: 'okdp-project-{{ .path.basename }}'
+      name: 'okdp.project.{{ .path.basename }}'
       # Not okdp.io/project: the console lists the services of a project by that label.
       labels:
         okdp.io/appproject: 'project-{{ .path.basename }}'
@@ -63,7 +67,7 @@ spec:
     spec:
       project: okdp
       source:
-        repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
+        repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
         targetRevision: main
         path: 'compiled/projects/{{ .path.basename }}/project'
         # A plain directory, explicitly: Argo CD would read it as a Kustomize

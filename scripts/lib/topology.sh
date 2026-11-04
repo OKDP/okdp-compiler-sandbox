@@ -24,26 +24,25 @@
 # flux/). The compiled tree is never here: a compile writes it into an output
 # directory, and scripts/configure.sh --push into the output repository on Forgejo. The
 # topology says which Forgejo repository each part lives in (gitops/README.md,
-# "Topologies"):
-#   mono   one deployments repository, gitops.repoURL of the control plane server
-#          (okdp-deployments): platform.yaml, catalogs.yaml, projects/, compiled/,
-#          argocd/;
-#   io     okdp-input (platform.yaml, catalogs.yaml, projects/) and okdp-output
-#          (compiled/, argocd/);
+# "Topologies"), the output always in a repository of its own, which the CI alone
+# writes:
+#   io     okdp-platform (platform.yaml, catalogs.yaml, at its root: the platform
+#          admins'), okdp-projects (projects/<p>/: the team's, every writer
+#          trusted with every project) and okdp-output (compiled/, argocd/);
 #   split  okdp-platform (platform.yaml, catalogs.yaml, projects.yaml at its root),
-#          okdp-project-<p> (projects/<p>/ at its root; the projects listed in
-#          projects.yaml) and okdp-output.
-# It is kept in the values of the control plane server: no gitops.topology is mono;
-# gitops.topology is the topology file of the server (GITOPS_CONFIG) for io and split.
-# Each part is at the root of its repository. Argo CD and Flux read the output
-# repository only: argocd/ and flux/ name its URL.
+#          okdp-project-<p> (projects/<p>/ at its root, its team's; the projects
+#          listed in projects.yaml) and okdp-output.
+# It is kept in the values of the control plane server, gitops.topology, its topology
+# file (GITOPS_CONFIG); there is no topology of one repository (the server's
+# gitops.repoURL is gone). Argo CD and Flux read the output repository only: argocd/
+# and flux/ name its URL.
 #
 # Before sourcing: PROG (the script's name, for messages), ROOT (the layout), SCRIPTS
 # (this scripts directory). Requires bash >= 4, yq v4, and git for the catalogs.
 
 # shellcheck disable=SC2034 # used by the scripts that source this file
-TOPOLOGIES=(mono io split)
-INPUT_REPO=okdp-input
+TOPOLOGIES=(io split)
+PROJECTS_REPO=okdp-projects
 OUTPUT_REPO=okdp-output
 PLATFORM_REPO=okdp-platform
 PROJECT_REPO_PREFIX=okdp-project-
@@ -100,33 +99,35 @@ one_of() { # value choices...
 
 # ------------------------------------------------------------------ topology
 
-# The mono deployments repository (gitops.repoURL), the layout at its root.
-mono_url() { yq '.gitops.repoURL // ""' "$SERVER_VALUES"; }
-mono_repo() { local u; u="$(mono_url)"; u="${u##*/}"; echo "${u%.git}"; }
-mono_check() {
-  [[ -z "$(yq '.gitops.path // ""' "$SERVER_VALUES" | tr -d /)" ]] \
-    || die "gitops.path (${SERVER_VALUES#"$ROOT"/}): the layout is at the root of its repositories, remove it"
+# legacy_check: dies when the server's values still name the single repository of
+# the removed mono topology (gitops.repoURL, branch, path): the server refuses it.
+legacy_check() {
+  local k
+  for k in repoURL branch path; do
+    [[ "$(yq ".gitops | has(\"$k\")" "$SERVER_VALUES")" == false ]] \
+      || die "gitops.$k (${SERVER_VALUES#"$ROOT"/}): the single deployments repository is gone (mono): scripts/configure.sh --topology io"
+  done
 }
 
-# The in-cluster Forgejo (http://<host>:<port>) and its organization, from
-# gitops.repoURL (<forgejo>/<organization>/<repository>.git).
-forgejo_cluster_url() {
-  local u; u="$(mono_url)"
+# The in-cluster Forgejo (http://<host>:<port>) and its organization, from the output
+# repository of gitops.topology (<forgejo>/<organization>/<repository>.git), or the
+# removed gitops.repoURL of an older layout, which scripts/configure.sh --topology
+# replaces.
+forgejo_repo_base() {
+  local u
+  u="$(yq '.gitops.topology.output.url // .gitops.repoURL // ""' "$SERVER_VALUES")"
   [[ "$u" =~ ^([a-z]+://[^/]+)/([^/]+)/[^/]+$ ]] \
-    || die "gitops.repoURL '$u' (${SERVER_VALUES#"$ROOT"/}): not <forgejo>/<organization>/<repository>.git"
-  echo "${BASH_REMATCH[1]}"
+    || die "gitops.topology.output.url '$u' (${SERVER_VALUES#"$ROOT"/}): not <forgejo>/<organization>/<repository>.git"
+  printf '%s\n%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 }
-forgejo_owner() {
-  local u; u="$(mono_url)"
-  [[ "$u" =~ ^([a-z]+://[^/]+)/([^/]+)/[^/]+$ ]] \
-    || die "gitops.repoURL '$u' (${SERVER_VALUES#"$ROOT"/}): not <forgejo>/<organization>/<repository>.git"
-  echo "${BASH_REMATCH[2]}"
-}
+forgejo_cluster_url() { forgejo_repo_base | sed -n 1p; }
+forgejo_owner() { forgejo_repo_base | sed -n 2p; }
 
-# topology_current: mono, io or split, from gitops.topology of the server's values.
+# topology_current: io or split, from gitops.topology of the server's values; none
+# without it (an older layout: scripts/configure.sh --topology io).
 topology_current() {
-  if [[ "$(yq '.gitops.topology | tag' "$SERVER_VALUES")" == "!!null" ]]; then
-    echo mono
+  if [[ "$(yq '.gitops.topology | tag' "$SERVER_VALUES")" != "!!map" ]]; then
+    echo none
   elif [[ "$(yq '.gitops.topology.projects.url // ""' "$SERVER_VALUES")" == *"{project}"* ]]; then
     echo split
   else
@@ -134,24 +135,25 @@ topology_current() {
   fi
 }
 
-# topology_file mono|io|split: the topology file of the server (GITOPS_CONFIG, io and
-# split) and of okdp-gitops --config (the CI's, ci_topology_file), the repositories on
-# the in-cluster Forgejo.
+# topology_require: dies unless the layout has a topology (io, split).
+topology_require() {
+  one_of "$(topology_current)" "${TOPOLOGIES[@]}" \
+    || die "no gitops.topology in ${SERVER_VALUES#"$ROOT"/} (the mono topology is gone): scripts/configure.sh --topology io|split"
+  legacy_check
+}
+
+# topology_file io|split: the topology file of the server (GITOPS_CONFIG) and of
+# okdp-gitops --config (the CI's, ci_topology_file), the repositories on the
+# in-cluster Forgejo. io keeps the platform apart, in a repository of its own that the
+# platform admins write, the projects in one repository.
 topology_file() {
   local base owner
   base="$(forgejo_cluster_url)"; owner="$(forgejo_owner)"
   case "$1" in
-    mono)
-      cat <<EOF
-platform: {url: "$(mono_url)", branch: main, path: ""}
-projects: {url: "$(mono_url)", branch: main, path: "projects/{project}"}
-output: {url: "$(mono_url)", branch: main, path: ""}
-EOF
-      ;;
     io)
       cat <<EOF
-platform: {url: "$base/$owner/$INPUT_REPO.git", branch: main, path: ""}
-projects: {url: "$base/$owner/$INPUT_REPO.git", branch: main, path: "projects/{project}"}
+platform: {url: "$base/$owner/$PLATFORM_REPO.git", branch: main, path: ""}
+projects: {url: "$base/$owner/$PROJECTS_REPO.git", branch: main, path: "projects/{project}"}
 output: {url: "$base/$owner/$OUTPUT_REPO.git", branch: main, path: ""}
 EOF
       ;;
@@ -163,35 +165,37 @@ output: {url: "$base/$owner/$OUTPUT_REPO.git", branch: main, path: ""}
 forgejo: {url: "$base", owner: "$owner"}
 EOF
       ;;
+    *) die "topology $1: one of ${TOPOLOGIES[*]}" ;;
   esac
 }
 
-# topology_set mono|io|split: writes gitops.topology (io, split) and
-# gitops.forgejoTokenSecret (split) in the server's values, or removes them (mono).
+# topology_set io|split: writes gitops.topology and, split, gitops.forgejoTokenSecret
+# in the server's values, the single repository of an older layout (gitops.repoURL,
+# branch, path) removed.
 topology_set() {
   local f
-  case "$1" in
-    mono)
-      yq -i 'del(.gitops.topology) | del(.gitops.forgejoTokenSecret)' "$SERVER_VALUES"
-      ;;
-    io|split)
-      f="$(mktemp)"
-      topology_file "$1" >"$f"
-      F="$f" yq -i '.gitops.topology = (load(strenv(F)) | ... style="")
-        | (.gitops.topology | key) head_comment = "Written by scripts/configure.sh --topology (io, split): the repositories of\nthe platform, of the projects and of the compiled tree (GITOPS_CONFIG)."' "$SERVER_VALUES"
-      rm -f "$f"
-      if [[ "$1" == split ]]; then
-        S="$FORGEJO_TOKEN_SECRET" yq -i '.gitops.forgejoTokenSecret = strenv(S)' "$SERVER_VALUES"
-      else
-        yq -i 'del(.gitops.forgejoTokenSecret)' "$SERVER_VALUES"
-      fi
-      ;;
-  esac
+  f="$(mktemp)"
+  topology_file "$1" >"$f"
+  F="$f" yq -i '.gitops.topology = (load(strenv(F)) | ... style="")
+    | (.gitops.topology | key) head_comment = "Written by scripts/configure.sh --topology io|split: the repositories of the\nplatform, of the projects and of the compiled tree (GITOPS_CONFIG)."
+    | del(.gitops.repoURL) | del(.gitops.branch) | del(.gitops.path)' "$SERVER_VALUES"
+  rm -f "$f"
+  if [[ "$1" == split ]]; then
+    S="$FORGEJO_TOKEN_SECRET" yq -i '.gitops.forgejoTokenSecret = strenv(S)' "$SERVER_VALUES"
+  else
+    yq -i 'del(.gitops.forgejoTokenSecret)' "$SERVER_VALUES"
+  fi
   [[ "$(topology_current)" == "$1" ]] || die "could not set the topology $1 in ${SERVER_VALUES#"$ROOT"/}"
 }
 
-# ci_topology_file TOPOLOGY: the topology file of the CI, which the workflow of each
-# repository of the sources carries (scripts/lib/forgejo.sh, forgejo_ci_workflow), the
+# topology_matches TOPOLOGY: the server's gitops.topology is the one topology_file
+# writes (the repositories of the sandbox).
+topology_matches() {
+  [[ "$(yq -o=json -I=0 '.gitops.topology' "$SERVER_VALUES")" == "$(topology_file "$1" | yq -o=json -I=0 '.')" ]]
+}
+
+# ci_topology_file TOPOLOGY: the topology file of the CI, which the workflow of the
+# output repository carries (scripts/lib/forgejo.sh, forgejo_output_workflow), the
 # server's without forgejo (the CI creates no repository; okdp-gitops requires the
 # token file of a forgejo section, which the CI has not).
 ci_topology_file() { topology_file "$1" | grep -v '^forgejo:'; }
@@ -222,13 +226,9 @@ ci_http_refused() {
   done < <(ci_topology_file "$1" | yq -r '.platform.url, .projects.url, .output.url')
 }
 
-# The output repository of a topology: compiled/, argocd/ at its root.
-output_url() {
-  case "$1" in
-    mono) mono_url ;;
-    *) echo "$(forgejo_cluster_url)/$(forgejo_owner)/$OUTPUT_REPO.git" ;;
-  esac
-}
+# The output repository of a topology: compiled/, argocd/ at its root, a repository
+# of its own in every topology.
+output_url() { echo "$(forgejo_cluster_url)/$(forgejo_owner)/$OUTPUT_REPO.git"; }
 output_repo() { local u; u="$(output_url "$1")"; u="${u##*/}"; echo "${u%.git}"; }
 
 # topology_describe TOPOLOGY: its repositories, one line each.
@@ -236,19 +236,17 @@ topology_describe() {
   local owner p
   owner="$(forgejo_owner)"
   case "$1" in
-    mono)
-      echo "  deployments  $owner/$(mono_repo) (platform.yaml, catalogs.yaml, projects/, compiled/, argocd/)"
-      ;;
     io)
-      echo "  input        $owner/$INPUT_REPO (platform.yaml, catalogs.yaml, projects/)"
-      echo "  output       $owner/$OUTPUT_REPO (compiled/, argocd/)"
+      echo "  platform     $owner/$PLATFORM_REPO (platform.yaml, catalogs.yaml: the platform admins)"
+      echo "  projects     $owner/$PROJECTS_REPO (projects/<p>/: the team, every project)"
+      echo "  output       $owner/$OUTPUT_REPO (compiled/, argocd/: the CI alone)"
       ;;
     split)
       echo "  platform     $owner/$PLATFORM_REPO"
       for p in $(project_names); do
         echo "  project      $owner/$PROJECT_REPO_PREFIX$p"
       done
-      echo "  output       $owner/$OUTPUT_REPO (compiled/, argocd/)"
+      echo "  output       $owner/$OUTPUT_REPO (compiled/, argocd/: the CI alone)"
       ;;
   esac
 }
@@ -424,18 +422,17 @@ catalog_args() {
 # repository holds it, at its root, whatever the topology (okdp-gitops compile
 # --config, OKDP_GITOPS names it): OUT gets the Argo CD entry point argocd/ of ROOT (its
 # root.yaml names the repository of the Applications okdp-gitops writes), then the
-# compile writes compiled/. OUT may be ROOT, a layout that holds its output (a clone of
-# the mono deployments repository): compiled in place. The catalogs are those of
+# compile writes compiled/. OUT is a directory of its own, never ROOT nor in it: the
+# output is never in a repository of the sources. The catalogs are those of
 # catalogs_resolve (call it first).
 layout_compile() {
   local out="$1" cfg args=()
   shift
-  mono_check
   mkdir -p "$out"; out="$(cd "$out" && pwd)"
-  if [[ "$out" != "$ROOT" ]]; then
-    rm -rf "$out/argocd"
-    cp -R "$ROOT/argocd" "$out/"
-  fi
+  [[ "$out" != "$ROOT" && "$out" != "$ROOT"/* ]] \
+    || die "the output directory $out is the layout or in it: the output is never in a repository of the sources (--output DIR elsewhere)"
+  rm -rf "$out/argocd"
+  cp -R "$ROOT/argocd" "$out/"
   cfg="$WORK/topology.local.yaml"
   cat >"$cfg" <<EOF
 # The tree of the layout, compiled into the output directory (okdp-gitops --config).

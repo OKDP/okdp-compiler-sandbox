@@ -21,8 +21,8 @@
 # GitRepository okdp-gitops is the output repository, the only one Flux reads,
 # authenticated with the Secret okdp-gitops-reader (secretRef), created by
 # scripts/configure.sh --push (forgejo_engine_secrets):
-# okdp-deployments in the mono topology (the sources and the output), okdp-output in io
-# and split; compiled/ at its root. scripts/configure.sh --topology rewrites its URL.
+# okdp-output, a repository of its own in every topology, which the CI alone writes;
+# compiled/ at its root. scripts/configure.sh --topology rewrites its URL.
 # The Kustomization okdp syncs the whole compiled tree: compiled/projects/
 # kustomization.yaml, which okdp-compiler's Flux target writes, lists the projects;
 # each project's, its instances and its manifests (project/); each instance's, its
@@ -34,7 +34,11 @@
 # only, as which helm-controller installs its releases (serviceAccountName); the
 # platform's own projects' releases are helm-controller's. kustomize-controller
 # applies the Namespaces and the RBAC first. Not generated, not in the output
-# repository.
+# repository. Names no release, <project>-<instance>, can take in these namespaces:
+# the Kustomization okdp, without a dash; the GitRepository okdp-gitops, the source
+# okdp-compiler's HelmReleases name (flux-system/okdp-gitops), in flux-system, where
+# no project's object can be (the compile refuses a project of the engines'
+# namespaces) and no compiled object is (the HelmReleases are in okdp-releases).
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -47,7 +51,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 1m
-  url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
+  url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
   ref:
     branch: main
   secretRef:

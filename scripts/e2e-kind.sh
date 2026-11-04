@@ -26,10 +26,12 @@
 # --push (organization okdp,
 # http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/<repository>.git, branch
 # main), the engine, its entry point (the output repository), then a wait until every
-# release is ready. Then the CI of the sources: a plain commit pushed to the repository
-# of the project okdp-system (a Secret added to its instance local-secrets-provider)
-# must be compiled by the CI runner (forgejo/forgejo-runner, the bootstrap's) into the output and
-# deployed.
+# release is ready. Then the CI: a plain commit pushed to the repository of the
+# project okdp-system (a Secret added to its instance local-secrets-provider) must be
+# compiled into the output by the next scheduled run of the output repository's
+# workflow (the runner forgejo/forgejo-runner, the bootstrap's) and deployed; the
+# repositories of the sources hold no workflow, and the output's main refuses a push
+# of anyone but the bot (the admin's).
 #
 # What is pushed is a copy of the layout at E2E_REF, adapted for the test:
 #   - scripts/configure.sh sets the control plane server's gitops.engine to the engine
@@ -55,7 +57,7 @@
 # Environment:
 #   E2E_DIR       work directory (kubeconfigs, pushed copy), default ./.e2e
 #   E2E_REF       Git ref of this repository to deploy, default HEAD (commit first)
-#   E2E_TOPOLOGY  mono (default), io or split (scripts/configure.sh --topology)
+#   E2E_TOPOLOGY  io (default) or split (scripts/configure.sh --topology)
 #   OKDP_CATALOGS "NAME=DIR|URL ..." where the catalogs are read from
 #   E2E_SERVER_IMAGE, E2E_UI_IMAGE   images of the control plane (repository:tag)
 #   E2E_GITOPS_IMAGE         the okdp-gitops image of the CI's jobs (repository:tag, in a registry)
@@ -69,14 +71,14 @@
 set -euo pipefail
 
 ACTION="${1:-}"; ENGINE="${2:-}"
-[[ "$ACTION" =~ ^(up|push|down)$ && "$ENGINE" =~ ^(argocd|flux)$ ]] || { sed -n '18,65p' "$0"; exit 2; }
+[[ "$ACTION" =~ ^(up|push|down)$ && "$ENGINE" =~ ^(argocd|flux)$ ]] || { sed -n '18,69p' "$0"; exit 2; }
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPTS/../gitops" && pwd)"
 PREFIX="$(git -C "$ROOT" rev-parse --show-prefix)"; PREFIX="${PREFIX%/}"
 E2E_DIR="$(mkdir -p "${E2E_DIR:-./.e2e}" && cd "${E2E_DIR:-./.e2e}" && pwd)"
 E2E_REF="${E2E_REF:-HEAD}"
-E2E_TOPOLOGY="${E2E_TOPOLOGY:-mono}"
+E2E_TOPOLOGY="${E2E_TOPOLOGY:-io}"
 E2E_LOAD_IMAGES="${E2E_LOAD_IMAGES:-}"
 E2E_SKIP_PROJECTS="${E2E_SKIP_PROJECTS:-}"
 E2E_SERVER_IMAGE="${E2E_SERVER_IMAGE:-}"
@@ -293,11 +295,14 @@ else
 fi
 
 # --------------------------------------------------------- a plain commit deploys
-# The CI of the sources (forgejo/forgejo-runner runs the workflow scripts/configure.sh
-# --push put in the repositories of the sources): a commit of the sources, pushed to
-# Forgejo by neither the console nor configure.sh, is compiled into the output
-# repository by the CI, then deployed by the engine. The commit adds a Secret to
+# The CI (forgejo/forgejo-runner runs the workflow scripts/configure.sh --push put in
+# the output repository, on its schedule): a commit of the sources, pushed to Forgejo
+# by neither the console nor configure.sh, is compiled into the output repository by
+# the next run, then deployed by the engine. The commit adds a Secret to
 # okdp-system/local-secrets-provider; the last commit of the output must be the CI's.
+# Before it, the output's branch protection: a push of the admin to its main is
+# refused (the bot, the CI's account, alone pushes there), and the sources hold no
+# workflow.
 ci_check() (
   PROG=e2e
   ROOT="$G"
@@ -305,18 +310,29 @@ ci_check() (
   source "$SCRIPTS/lib/topology.sh"
   # shellcheck source=lib/forgejo.sh
   source "$SCRIPTS/lib/forgejo.sh"
-  local owner repo dir marker
+  local owner repo dir marker output
   work_init
   forgejo_init
   forgejo_connect
   owner="$(forgejo_owner)"
   case "$(topology_current)" in
-    mono) repo="$(mono_repo)"; dir=projects/okdp-system ;;
-    io) repo="$INPUT_REPO"; dir=projects/okdp-system ;;
+    io) repo="$PROJECTS_REPO"; dir=projects/okdp-system ;;
     split) repo="${PROJECT_REPO_PREFIX}okdp-system"; dir=. ;;
   esac
+  output="$(output_repo "$(topology_current)")"
+  forgejo_git clone -q "$(forgejo_repo_url "$owner" "$output")" "$WORK/output"
+  forgejo_git -C "$WORK/output" commit -q --allow-empty -m "e2e: a push of the admin to the output"
+  if forgejo_git -C "$WORK/output" push -q origin HEAD:main 2>/dev/null; then
+    log "the admin pushed to $owner/$output main: its branch protection lets others than the bot push"
+    return 1
+  fi
+  log "$owner/$output main refuses the admin's push"
   marker="e2e-$(date +%s)"
   forgejo_git clone -q "$(forgejo_repo_url "$owner" "$repo")" "$WORK/sources"
+  if [[ -e "$WORK/sources/.forgejo" ]]; then
+    log "$owner/$repo holds .forgejo/: the sources hold no workflow"
+    return 1
+  fi
   # An entry generates its credentials or reads them from the store: this one
   # generates a key, the marker is a static one.
   M="$marker" yq -i '.secrets += [{"name": "okdp-e2e-ci", "generate": [{"key": "token"}], "data": {"marker": strenv(M)}}]' \
@@ -327,8 +343,8 @@ ci_check() (
   ci_deployed() {
     [[ "$(kubectl -n okdp-system get secret okdp-e2e-ci -o jsonpath='{.data.marker}' 2>/dev/null | base64 -d)" == "$marker" ]]
   }
-  wait_for "the commit compiled by the CI and deployed" ci_deployed
-  forgejo_api GET "/repos/$owner/$(output_repo "$(topology_current)")/commits?sha=main&limit=1"
+  wait_for "the commit compiled by the CI (its schedule) and deployed" ci_deployed
+  forgejo_api GET "/repos/$owner/$output/commits?sha=main&limit=1"
   [[ "$(jq -r '.[0].commit.message' "$FORGEJO_BODY")" == "okdp: compile"* ]] \
     || { log "the last commit of the output is not the CI's: $(jq -r '.[0].commit.message' "$FORGEJO_BODY")"; return 1; }
   log "the output was compiled by the CI"

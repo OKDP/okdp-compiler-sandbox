@@ -25,7 +25,7 @@ metadata:
 spec:
   project: okdp
   source:
-    repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
+    repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
     targetRevision: main
     path: argocd
   destination:

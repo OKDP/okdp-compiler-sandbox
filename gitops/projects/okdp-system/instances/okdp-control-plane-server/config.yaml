@@ -1,20 +1,31 @@
 # okdp-system/okdp-control-plane-server: the OKDP package okdp-control-plane-server
-# (platform-charts catalog). The console's API: it commits to
-# the deployments repositories served by Forgejo (a dependency of the platform,
-# sandbox-charts' bootstrap/forgejo) and reads the cluster.
+# (platform-charts catalog). The console's API: it commits to the repositories of
+# the sources served by Forgejo (a dependency of the platform, sandbox-charts'
+# bootstrap/forgejo), never to the output, which the CI of the output repository
+# compiles, and reads the cluster. The topology names every repository: there is no
+# single deployments repository (gitops.repoURL is gone).
 gitops:
-  # The mono topology: one deployments repository, the sources and the compiled tree at
-  # its root (GITOPS_REPO_URL, GITOPS_BRANCH). scripts/configure.sh --topology
-  # io|split adds topology (the repositories of the platform, of the projects and of
-  # the compiled tree: GITOPS_CONFIG), which takes over, and for split
-  # forgejoTokenSecret (the Secret configure.sh --push creates).
-  repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-deployments.git
-  branch: main
-  # argocd or flux: set it to the engine that deploys this repository.
+  # Written by scripts/configure.sh --topology io|split: the repositories of the
+  # platform, of the projects and of the compiled tree (GITOPS_CONFIG).
+  topology:
+    platform:
+      url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-platform.git
+      branch: main
+      path: ""
+    projects:
+      url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-projects.git
+      branch: main
+      path: projects/{project}
+    output:
+      url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
+      branch: main
+      path: ""
+  # argocd or flux: set it to the engine that deploys the output repository.
   engine: argocd
   # The Forgejo user okdp-gitops, not an admin, which writes to the repositories of the
-  # topology only: scripts/configure.sh --push creates it and writes this Secret in
-  # the server's namespace (and the CI runner's), never in Git.
+  # topology only (the server commits to the sources; the output is the CI's):
+  # scripts/configure.sh --push creates it and writes this Secret in the server's
+  # namespace, never in Git.
   credentialsSecret: okdp-gitops-bot
   # The upstream charts of the instances, pulled for the checks of each compile.
   chartCacheDir: /var/cache/okdp/charts

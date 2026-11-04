@@ -46,7 +46,7 @@ they only make sense with a GitOps engine:
 | Left out | Why |
 |---|---|
 | Forgejo (sandbox-charts' `bootstrap/forgejo`) | holds the deployments repositories the engines read: nothing reads them here |
-| The CI runner (sandbox-charts' `bootstrap/forgejo-runner`) | the CI that compiles each push to those repositories |
+| The CI runner (sandbox-charts' `bootstrap/forgejo-runner`) | the CI of the output repository, which compiles the sources into it on a schedule |
 | `okdp-system/okdp-control-plane-server`, `okdp-system/okdp-control-plane-ui` | the console commits to the deployments repositories and reads the status of the Argo CD Applications or Flux HelmReleases (`GITOPS_ENGINE` must be `argocd` or `flux`) |
 
 There is no console. Changes are applied to the platform by editing `gitops/`, compiling

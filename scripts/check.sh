@@ -21,8 +21,11 @@
 #   2. the shapes: platform.yaml (its privileged projects, projects of the layout),
 #      catalogs.yaml (its repositories and its menu), projects.yaml (the split
 #      topology), each project's project.yaml, each
-#      instance's instance.yaml (a package of the catalogs) and config.yaml; flux/
-#      and argocd/ read the output repository of the topology; the CI's topology
+#      instance's instance.yaml (a package of the catalogs) and config.yaml; the
+#      control plane server names the sandbox's io or split topology (gitops.topology;
+#      no single repository, mono is gone; io warned of: every writer of the projects
+#      repository writes every project); flux/ and argocd/ read the output repository
+#      of the topology; the CI's topology
 #      reaches http:// on the hosts of CI_INSECURE_HTTP_HOSTS only; the connections
 #      (platform.yaml, project.yaml, connections.yaml) match their contract schema,
 #      from the contracts/ of the catalogs (one contract in two catalogs must be the
@@ -69,7 +72,7 @@ while [[ $# -gt 0 ]]; do
     --catalog) CATALOGS+=("$2"); shift 2 ;;
     --charts) CHARTS="$(cd "$2" && pwd)"; shift 2 ;;
     --helm) HELM=true; shift ;;
-    -h|--help) sed -n '18,52p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,55p' "$0"; exit 0 ;;
     *) echo "check: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -176,8 +179,20 @@ fi
 
 step "topology ($(topology_current))"
 topology="$(topology_current)"
-[[ -z "$(yq '.gitops.path // ""' "$SERVER_VALUES" | tr -d /)" ]] \
-  || fail "${SERVER_VALUES#"$ROOT"/}: gitops.path is set, the layout is at the root of its repositories"
+if ! one_of "$topology" "${TOPOLOGIES[@]}"; then
+  fail "${SERVER_VALUES#"$ROOT"/}: no gitops.topology (the mono topology, one deployments repository, is gone): scripts/configure.sh --topology io|split"
+  topology=io
+fi
+for k in repoURL branch path; do
+  [[ "$(yq ".gitops | has(\"$k\")" "$SERVER_VALUES")" == false ]] \
+    || fail "${SERVER_VALUES#"$ROOT"/}: gitops.$k names the single deployments repository of the removed mono topology, which the server refuses: scripts/configure.sh --topology $topology"
+done
+topology_matches "$topology" \
+  || fail "${SERVER_VALUES#"$ROOT"/}: gitops.topology is not the sandbox's $topology topology (other repositories: an older layout's?): scripts/configure.sh --topology $topology"
+if [[ "$topology" == io ]]; then
+  # The trust model of io: one repository for every project.
+  echo "   warning: io, a small team's: every writer of okdp/$PROJECTS_REPO writes every project, the platform's own (privileged) among them; split gives each project a repository of its own, its team's"
+fi
 [[ "$(entry_url)" == "$(output_url "$topology")" ]] \
   || fail "argocd/ and flux/ read $(entry_url), not the output repository of the $topology topology: scripts/configure.sh --topology $topology"
 [[ -z "$(entry_prefix)" ]] \

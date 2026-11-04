@@ -18,9 +18,9 @@
 # itself (a dependency of the platform, README step 5a), with:
 #   kubectl apply -n argocd -f gitops/argocd/
 # then Application "okdp" (root.yaml) manages this directory from Git: instances.yaml
-# and projects.yaml. Every file reads the output repository only: okdp-deployments in
-# the mono topology (the sources and the output), okdp-output in io and split;
-# compiled/ and argocd/ at its root. scripts/configure.sh --push puts this directory
+# and projects.yaml. Every file reads the output repository only, okdp-output, a
+# repository of its own in every topology, which the CI alone writes; compiled/ and
+# argocd/ at its root. scripts/configure.sh --push puts this directory
 # there with the compiled tree (okdp-gitops writes the Applications of the instances
 # because root.yaml is there, from its source); scripts/configure.sh --topology
 # rewrites the URLs.

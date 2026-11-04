@@ -19,7 +19,8 @@
 # the layout compiles (okdp-gitops compile: every instance compiled with its package
 # of the service catalogs, its values checked against the upstream charts) into the
 # output tree scripts/configure.sh --push would push (never committed here),
-# kustomize builds, helm template of every compiled instance. The bootstrap (the
+# kustomize builds, helm template of every compiled instance; in the committed
+# topology (io), then in split (a copy configured for it). The bootstrap (the
 # platform's prerequisites) is sandbox-charts' bootstrap/, checked there.
 #
 # okdp-gitops is built from its repository, with okdp-compiler next to it (its go.mod
@@ -126,3 +127,12 @@ jobs:
       - name: Check the layout ✅
         # yq v4 and jq are preinstalled on ubuntu-latest.
         run: scripts/check.sh --output "${RUNNER_TEMP}/output" --charts "${RUNNER_TEMP}/charts" --helm
+
+      - name: Check the layout in the split topology ✅
+        # A copy of the layout, configured for split (the committed one is io): the
+        # same tree, its repositories one per project.
+        run: |
+          set -euo pipefail
+          cp -R gitops "${RUNNER_TEMP}/split"
+          scripts/configure.sh --root "${RUNNER_TEMP}/split" --topology split </dev/null
+          scripts/check.sh --root "${RUNNER_TEMP}/split"

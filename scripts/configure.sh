@@ -20,14 +20,17 @@
 # 1. Choose, in the layout only (nothing is applied; commit the result):
 #   --engine argocd|flux        gitops.engine of the control plane server (the
 #                               console writes for that engine);
-#   --topology mono|io|split    the Forgejo repositories of the parts: mono one
-#                               deployments repository (okdp/okdp-deployments:
-#                               the tree, compiled/, argocd/); io okdp/okdp-input
-#                               (platform.yaml, catalogs.yaml, projects/) and
-#                               okdp/okdp-output (compiled/, argocd/); split
-#                               okdp/okdp-platform, one okdp/okdp-project-<p> per
-#                               project and okdp/okdp-output. Writes gitops.topology
-#                               (and, split, gitops.forgejoTokenSecret) of the server,
+#   --topology io|split         the Forgejo repositories of the parts, the output
+#                               always apart (okdp/okdp-output: compiled/,
+#                               argocd/, the CI alone writes it): io (a small team)
+#                               okdp/okdp-platform (platform.yaml, catalogs.yaml:
+#                               the platform admins) and okdp/okdp-projects
+#                               (projects/: every writer writes every project);
+#                               split (per-project permissions) okdp/okdp-platform
+#                               and one okdp/okdp-project-<p> per project. Writes
+#                               gitops.topology (and, split,
+#                               gitops.forgejoTokenSecret) of the server, removes
+#                               an older layout's gitops.repoURL, branch and path,
 #                               points argocd/ and flux/ at the output repository,
 #                               writes (split) or removes projects.yaml.
 #   Without a choice on a terminal, or with -i, asks for both (the current values are
@@ -38,27 +41,31 @@
 #   the platform's dependencies, README step 3; current kubectl context, port-forward,
 #   or FORGEJO_URL):
 #   compiles it into the output tree (as scripts/compile.sh does; nothing is pushed
-#   when it does not compile), creates the organization okdp and the repositories of
-#   the topology (public), copies the service catalogs of catalogs.yaml (their
+#   when it does not compile) with its CI, the output repository's workflow, the
+#   only one (okdp-gitops workflow --for output: a compile of the sources every 2
+#   minutes, the topology in it), creates the organization okdp and the repositories
+#   of the topology (private), copies the service catalogs of catalogs.yaml (their
 #   ref, from --catalog, else the checkouts next to this repository, else GitHub),
 #   gives the console and the CI their own Forgejo account, okdp-gitops, not an
-#   admin, with write access to the repositories of the topology only (its password
-#   in the console's Secret, in its namespace; a token of it in the Actions secret
-#   OKDP_GITOPS_TOKEN of each repository of the sources, the CI's), registers the CI
-#   runner (forgejo/forgejo-runner) for each repository of the sources, never the
-#   organization (its registration secrets in its namespace), puts the CI in them
-#   (the workflow, the topology in it), pushes each part, the sources then the
-#   output, as one commit on top of the repository's main (refused when the console
-#   committed there since the last push; --force replaces the console's changes),
-#   and, split, creates an access token of that account for the server, in the
-#   Secret gitops.forgejoTokenSecret of its namespace. It signs in to Forgejo as its
-#   admin, of the Secret gitea.admin.existingSecret of sandbox-charts'
+#   admin, with write access to the repositories of the topology only and read
+#   access to the catalogs (its password in the console's Secret, in its namespace;
+#   a token of it in the Actions secret OKDP_GITOPS_TOKEN of the output repository
+#   only, the CI's), turns Actions on in the output repository only, registers the
+#   CI runner (forgejo/forgejo-runner) for the output repository only, never a
+#   repository of the sources nor the organization (its registration secret in its
+#   namespace), protects the output's main (only okdp-gitops pushes there), pushes
+#   each part, the sources (no workflow, no secret) as the admin then the output as
+#   okdp-gitops, as one commit on top of the repository's main (refused when the
+#   console committed there since the last push; --force replaces the console's
+#   changes), and, split, creates an access token of that account for the server,
+#   in the Secret gitops.forgejoTokenSecret of its namespace. It signs in to Forgejo
+#   as its admin, of the Secret gitea.admin.existingSecret of sandbox-charts'
 #   bootstrap/forgejo (README, step 3).
 #   --dry-run compiles, prints what it would push and keeps the parts (in --work DIR,
 #   or a printed directory).
 #
 # Usage: configure.sh [-i|--interactive] [--engine argocd|flux]
-#                     [--topology mono|io|split] [--root DIR]
+#                     [--topology io|split] [--root DIR]
 #        configure.sh --push [--force] [--dry-run] [--work DIR] [--catalog NAME=SRC]...
 #        configure.sh --show
 # --catalog NAME=SRC: see scripts/compile.sh. Requires bash >= 4, yq v4; --push also
@@ -95,7 +102,7 @@ while [[ $# -gt 0 ]]; do
     --work) WORK_DIR="$2"; shift 2 ;;
     --catalog) CATALOGS+=("$2"); shift 2 ;;
     --root) ROOT="$(cd "$2" && pwd)"; shift 2 ;;
-    -h|--help) sed -n '18,66p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,70p' "$0"; exit 0 ;;
     *) echo "configure: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -112,6 +119,7 @@ one_of "$CUR_ENGINE" "${ENGINES[@]}" \
   || die "unexpected gitops.engine '$CUR_ENGINE' in ${SERVER_VALUES#"$ROOT"/}"
 
 if $SHOW; then
+  topology_require
   echo "engine:   $CUR_ENGINE"
   echo "topology: $CUR_TOPOLOGY"
   topology_describe "$CUR_TOPOLOGY"
@@ -123,8 +131,6 @@ fi
 
 # The files of the tree, the platform's part: okdp-compiler's and okdp-gitops'.
 PLATFORM_PATHS=(platform.yaml catalogs.yaml projects.yaml)
-# The whole tree (one repository: mono, io).
-TREE_PATHS=(platform.yaml catalogs.yaml projects.yaml projects)
 
 # part DEST TREE [PATHS...]: the committed files (HEAD) of TREE, a directory of this
 # repository ("" for its root), or only its PATHS that exist, into DEST.
@@ -140,7 +146,7 @@ part() {
 }
 
 push() {
-  local owner prefix sha message p force=() out repos=() sources=()
+  local owner prefix sha message p force=() out output sources=()
   # shellcheck source=lib/forgejo.sh
   source "$SCRIPTS/lib/forgejo.sh"
   TOP="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)" \
@@ -149,7 +155,7 @@ push() {
     || die "uncommitted changes in $ROOT: commit them first (--push sends HEAD)"
   command -v "${OKDP_GITOPS:-okdp-gitops}" >/dev/null \
     || die "okdp-gitops is required to compile the layout (https://github.com/OKDP/okdp-gitops: make build; or set OKDP_GITOPS)"
-  mono_check
+  topology_require
   prefix="$(git -C "$ROOT" rev-parse --show-prefix)"; prefix="${prefix%/}"
   sha="$(git -C "$TOP" rev-parse --short HEAD)"
   message="okdp-sandbox $sha: $(git -C "$TOP" log -1 --format=%s)"
@@ -160,7 +166,8 @@ push() {
   work_init "$WORK_DIR"
   catalog_sources_init "${CATALOGS[@]}"
 
-  # The committed layout, compiled into the tree of the output repository.
+  # The committed layout, compiled into the tree of the output repository, and its
+  # CI, the only workflow, the topology in it: refused (nothing pushed) as the compile.
   echo "Compiling $sha ($CUR_TOPOLOGY topology)"
   part "$WORK/layout" "$prefix"
   catalogs_resolve
@@ -171,6 +178,9 @@ push() {
   (ROOT="$WORK/layout"; layout_compile "$out" ${OKDP_GITOPS_ARGS:-}) >"$WORK/compile.log" 2>&1 \
     || { cat "$WORK/compile.log" >&2; die "the layout does not compile: nothing pushed"; }
   echo "compiled: $(find "$out/compiled" -type f | wc -l) files in compiled/"
+  ci_topology_file "$CUR_TOPOLOGY" >"$WORK/topology.ci.yaml"
+  forgejo_output_workflow "$out" "$WORK/topology.ci.yaml" \
+    || die "okdp-gitops workflow refuses the CI's topology ($CUR_TOPOLOGY): nothing pushed"
 
   echo "Pushing $sha, $CUR_TOPOLOGY topology, to Forgejo"
   forgejo_init
@@ -178,62 +188,38 @@ push() {
   forgejo_ensure_org "$owner"
   forgejo_push_catalogs
 
-  # The parts of the sources, their CI (the workflow carries the topology), and their
-  # repositories, created before anything is pushed: the CI's token and runner are
-  # in place when the first push starts a run.
-  ci_topology_file "$CUR_TOPOLOGY" >"$WORK/topology.ci.yaml"
+  # The parts of the sources, no workflow among them, and their repositories, then
+  # the output's, created before anything is pushed: the CI's token and runner are in
+  # place when its schedule first runs.
+  part "$WORK/parts/$PLATFORM_REPO" "$prefix" "${PLATFORM_PATHS[@]}"
+  forgejo_ensure_repo "$owner" "$PLATFORM_REPO" "OKDP platform sources, the platform admins': platform.yaml, catalogs.yaml ($CUR_TOPOLOGY topology)"
+  sources+=("$PLATFORM_REPO")
   case "$CUR_TOPOLOGY" in
-    mono)
-      # One repository: the tree next to the output.
-      for p in "${TREE_PATHS[@]}"; do
-        if [[ -e "$WORK/layout/$p" ]]; then cp -R "$WORK/layout/$p" "$out/"; fi
-      done
-      forgejo_ci_workflow "$out" "$WORK/topology.ci.yaml"
-      forgejo_ensure_repo "$owner" "$(mono_repo)" "OKDP deployments repository: the sources and the compiled tree (mono topology)"
-      sources+=("$(mono_repo)")
-      ;;
     io)
-      part "$WORK/parts/$INPUT_REPO" "$prefix" "${TREE_PATHS[@]}"
-      forgejo_ci_workflow "$WORK/parts/$INPUT_REPO" "$WORK/topology.ci.yaml"
-      forgejo_ensure_repo "$owner" "$INPUT_REPO" "OKDP sources: platform.yaml, catalogs.yaml, projects/ (io topology)"
-      sources+=("$INPUT_REPO")
+      part "$WORK/parts/$PROJECTS_REPO" "$prefix" projects
+      forgejo_ensure_repo "$owner" "$PROJECTS_REPO" "OKDP projects, projects/<p>/, every writer trusted with every project (io topology)"
+      sources+=("$PROJECTS_REPO")
       ;;
     split)
-      part "$WORK/parts/$PLATFORM_REPO" "$prefix" "${PLATFORM_PATHS[@]}"
-      forgejo_ci_workflow "$WORK/parts/$PLATFORM_REPO" "$WORK/topology.ci.yaml"
-      forgejo_ensure_repo "$owner" "$PLATFORM_REPO" "OKDP platform sources (split topology)"
-      sources+=("$PLATFORM_REPO")
       for p in $(yq '.projects[].name' "$PROJECTS_FILE"); do
         [[ -d "$ROOT/projects/$p" ]] || die "projects.yaml lists $p, projects/$p does not exist"
         part "$WORK/parts/$PROJECT_REPO_PREFIX$p" "${prefix:+$prefix/}projects/$p"
-        forgejo_ci_workflow "$WORK/parts/$PROJECT_REPO_PREFIX$p" "$WORK/topology.ci.yaml"
-        forgejo_ensure_repo "$owner" "$PROJECT_REPO_PREFIX$p" "OKDP project $p (split topology)"
+        forgejo_ensure_repo "$owner" "$PROJECT_REPO_PREFIX$p" "OKDP project $p, its team's (split topology)"
         sources+=("$PROJECT_REPO_PREFIX$p")
       done
       ;;
   esac
-  for p in "${sources[@]}"; do forgejo_enable_actions "$owner" "$p"; done
-  if [[ "$CUR_TOPOLOGY" != mono ]]; then
-    forgejo_ensure_repo "$owner" "$OUTPUT_REPO" "OKDP compiled tree, read by Argo CD and Flux ($CUR_TOPOLOGY topology)"
-    forgejo_enable_actions "$owner" "$OUTPUT_REPO"
-    repos=("${sources[@]}" "$OUTPUT_REPO")
-  else
-    repos=("${sources[@]}")
-  fi
-  forgejo_bot "$owner" "$([[ "$CUR_TOPOLOGY" == split ]] && echo true || echo false)" "${repos[@]}"
-  if [[ "$CUR_TOPOLOGY" != mono ]]; then
-    # The write token in the output repository only; each source repository
-    # gets a dispatch token to trigger the output's workflow on stale compiles.
-    forgejo_ci_token "$owner" "$OUTPUT_REPO" "${sources[@]}"
-    forgejo_register_runner "$owner" "${sources[@]}" "$OUTPUT_REPO"
-  else
-    # Mono: the source is the output; the write token goes there.
-    forgejo_ci_token "$owner" "${sources[0]}" "${sources[@]}"
-    forgejo_register_runner "$owner" "${sources[@]}"
-  fi
-
-  # Branch protection on the output repository's main: no force push, no deletion.
-  forgejo_protect_branch "$owner" "$(output_repo "$CUR_TOPOLOGY")" main
+  output="$(output_repo "$CUR_TOPOLOGY")"
+  forgejo_ensure_repo "$owner" "$output" "OKDP compiled tree, read by Argo CD and Flux, written by its CI alone ($CUR_TOPOLOGY topology)"
+  # Actions: the output's only; no workflow of the sources runs.
+  for p in "${sources[@]}"; do forgejo_set_actions "$owner" "$p" false; done
+  forgejo_set_actions "$owner" "$output" true
+  forgejo_bot "$owner" "$([[ "$CUR_TOPOLOGY" == split ]] && echo true || echo false)" "${sources[@]}" "$output"
+  # The CI: its token in the output repository only, its runner registered for it
+  # only, its main pushed by the bot alone (no force push, no deletion).
+  forgejo_ci_token "$owner" "$output" "${sources[@]}"
+  forgejo_register_runner "$owner" "$output"
+  forgejo_protect_branch "$owner" "$output" main
   # The engines' read token for private repositories, in argocd (Argo CD's
   # repository credentials) and flux-system (Flux's GitRepository secretRef): one
   # token, two Secrets.
@@ -246,19 +232,12 @@ push() {
       -p "$(jq -cn --arg u "$(forgejo_cluster_url)" '{stringData: {url: $u, type: "git"}}')" >/dev/null
   fi
 
-  # The output repository's own workflow (split/io): triggered by dispatch from the
-  # source repositories' check workflows, it compiles and pushes with the write token.
-  if [[ "$CUR_TOPOLOGY" != mono ]]; then
-    forgejo_output_workflow "$out" "$WORK/topology.ci.yaml"
-  fi
-
-  # The sources, then the output.
-  if [[ "$CUR_TOPOLOGY" != mono ]]; then
-    for p in "${sources[@]}"; do
-      forgejo_push_tree "$WORK/parts/$p" "$owner" "$p" "$message" "${force[@]}"
-    done
-  fi
-  forgejo_push_tree "$out" "$owner" "$(output_repo "$CUR_TOPOLOGY")" "$message" "${force[@]}"
+  # The sources, as the admin, then the output, as the bot: the CI compiles them at
+  # its next run.
+  for p in "${sources[@]}"; do
+    forgejo_push_tree "$WORK/parts/$p" "$owner" "$p" "$message" "${force[@]}"
+  done
+  forgejo_push_tree "$out" "$owner" "$output" "$message" "${force[@]}" --as-bot
   if [[ "$CUR_TOPOLOGY" == split ]]; then
     forgejo_token_secret "$SERVER_NAMESPACE" \
       "$(yq '.gitops.forgejoTokenSecret // ""' "$SERVER_VALUES")"
@@ -312,9 +291,10 @@ if $INTERACTIVE; then
   [[ -r /dev/tty ]] || { echo "configure: --interactive needs a terminal" >&2; exit 2; }
   [[ -n "$ENGINE" ]] || ENGINE="$(ask "GitOps engine:" "$CUR_ENGINE" "${ENGINES[@]}")"
   if [[ -z "$TOPOLOGY" ]]; then
-    echo "Repositories: mono, one deployments repository; io, an input and an output" >&2
-    echo "repository; split, a platform repository, one per project and an output one." >&2
-    TOPOLOGY="$(ask "Topology:" "$CUR_TOPOLOGY" "${TOPOLOGIES[@]}")"
+    echo "Repositories, the output always apart: io (a small team), a platform and a" >&2
+    echo "projects repository; split (per-project permissions), a platform repository" >&2
+    echo "and one per project." >&2
+    TOPOLOGY="$(ask "Topology:" "$(one_of "$CUR_TOPOLOGY" "${TOPOLOGIES[@]}" && echo "$CUR_TOPOLOGY" || echo io)" "${TOPOLOGIES[@]}")"
   fi
   echo >&2
   echo "engine:   $CUR_ENGINE -> $ENGINE" >&2
@@ -347,7 +327,10 @@ if [[ "$ENGINE" != "$CUR_ENGINE" ]]; then
   changed=true
 fi
 
-if [[ "$TOPOLOGY" != "$CUR_TOPOLOGY" ]]; then
+# Also the same topology with other repositories (an older layout's, a hand edit),
+# or the single repository of the removed mono topology still named.
+if [[ "$TOPOLOGY" != "$CUR_TOPOLOGY" ]] || ! topology_matches "$TOPOLOGY" \
+  || [[ "$(yq '.gitops | has("repoURL") or has("branch") or has("path")' "$SERVER_VALUES")" == true ]]; then
   topology_set "$TOPOLOGY"
   echo "topology: $CUR_TOPOLOGY -> $TOPOLOGY (${SERVER_VALUES#"$ROOT"/})"
   changed=true
