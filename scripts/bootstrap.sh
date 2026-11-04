@@ -25,25 +25,27 @@
 #   1. cert-manager, trust-manager and the cluster issuer default-issuer, a CA minted
 #      in the cluster (namespace cert-manager), then the CA bundle of every namespace
 #      (bootstrap/trust-manager/bundle.yaml, Secret and ConfigMap certs-bundle);
-#   2. the replicator and Reloader (kube-tools), the deletion protection
-#      (bootstrap/protection/policies.yaml);
+#   2. Reloader (kube-tools), the deletion protection
+#      (bootstrap/protection/policies.yaml); no replicator;
 #   3. ingress-nginx (ingress-nginx), then the cluster's CoreDNS patched to answer the
 #      ingress suffix with its Service (bootstrap/coredns/patch.sh), and the DNS
 #      server of the host (dns-server, a CoreDNS on the node port 30053);
 #   4. CloudNativePG, the PostgreSQL operator (cnpg-system);
 #   5. External Secrets (external-secrets);
-#   6. Keycloak (keycloak): its database, a CloudNativePG cluster, the secrets of
-#      the realm's clients, generated once (bootstrap/keycloak/client-secrets.sh:
-#      Secret keycloak/keycloak-client-secrets, none in Git), then Keycloak and its
-#      realm, which reads them;
+#   6. Keycloak (keycloak): its admin account in Secret keycloak/keycloak-admin, a
+#      random password created once, its database, a CloudNativePG cluster, the
+#      secrets of the realm's clients, generated once
+#      (bootstrap/keycloak/client-secrets.sh: Secret keycloak/keycloak-client-secrets,
+#      none in Git), then Keycloak and its realm, which reads them;
 #   7. RustFS, the S3 store (rustfs): its buckets, and the platform's access key;
 #   8. OpenBao (openbao), the platform's secret store, then its init
 #      (bootstrap/openbao/init.sh): initialized and unsealed (SANDBOX ONLY: its
 #      unseal key and root token in Secret openbao/openbao-init), the KV mount, the
-#      Kubernetes auth and the policy of the namespaces, the platform's keys: the
-#      S3 access key under platform/s3, the secret of each client of the realm
-#      under platform/keycloak/<client> (property client_secret), which the
-#      compiled instances read;
+#      Kubernetes auth and the policy of the namespaces, the platform's key: the
+#      S3 access key under platform/s3; the secret of each client of the realm
+#      under <namespace>/keycloak/<client> (property client_secret) of the
+#      namespaces that read it (bootstrap/openbao/clients.yaml), where the
+#      compiled instances read it;
 #   9. Forgejo (forgejo), the Git server of the deployments repositories and of the
 #      catalogs, its admin account in Secret forgejo/okdp-forgejo-admin, a random
 #      password created once, then its CI runner (bootstrap/forgejo-runner, a chart of
@@ -71,7 +73,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) DIR="$(cd "$2" && pwd)"; shift 2 ;;
     --catalog) CATALOGS+=("$2"); shift 2 ;;
-    -h|--help) sed -n '18,61p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,63p' "$0"; exit 0 ;;
     *) echo "bootstrap: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -120,8 +122,7 @@ release trust-manager
 release cert-issuers
 kubectl apply -f "$DIR/trust-manager/bundle.yaml"
 
-step "The replicator, Reloader and the deletion protection"
-release kubernetes-replicator
+step "Reloader and the deletion protection"
 release reloader
 kubectl apply -f "$DIR/protection/policies.yaml"
 
@@ -138,6 +139,10 @@ release external-secrets
 
 step "Keycloak and its database"
 namespace keycloak
+if ! kubectl -n keycloak get secret keycloak-admin >/dev/null 2>&1; then
+  head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' | kubectl -n keycloak create secret generic \
+    keycloak-admin --from-file=admin-password=/dev/stdin
+fi
 kubectl apply -f "$DIR/keycloak/database.yaml"
 # The operator writes the cluster's status a moment after the object.
 for _ in $(seq 30); do

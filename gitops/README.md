@@ -371,9 +371,10 @@ namespace, which its package reads as any connection's `secretRef.name`
 This is how the platform talks to a store it neither deploys nor manages: the
 platform's keys are under `platform/`, which every namespace reads and the bootstrap
 writes (the sandbox's S3 store, RustFS, generates the platform's access key, and
-OpenBao's init copies it under `platform/s3`, fields `accessKey` and `secretKey`; it
-writes the secrets of the Keycloak realm's clients too, under
-`platform/keycloak/<client>`, which `local-secrets-provider` reads, `remoteKey`); a
+OpenBao's init copies it under `platform/s3`, fields `accessKey` and `secretKey`; the
+secrets of the Keycloak realm's clients are no platform keys: it writes each under
+`<namespace>/keycloak/<client>` of the namespaces that read it, which
+`local-secrets-provider` reads there, `remoteKey`); a
 company's own S3 takes its place with its fields and its key in the store. A
 project's own connection may only name a key of its namespace, `<p>/<key>`: the
 store's policy allows nothing else ([Claims](#claims)).

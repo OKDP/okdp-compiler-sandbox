@@ -21,7 +21,8 @@ gitops:
 # User and group management through the Keycloak Admin API (URL and realm from the
 # platform OIDC issuer), as the realm's client okdp-control-plane, its credentials the
 # Secret okdp-system/local-secrets-provider reads from the platform's secret store
-# (platform/keycloak/okdp-control-plane, written at the bootstrap). Self-signed sandbox
+# (okdp-system/keycloak/okdp-control-plane, written at the bootstrap, which only
+# okdp-system reads). Self-signed sandbox
 # certificate.
 keycloak:
   credentialsSecret:

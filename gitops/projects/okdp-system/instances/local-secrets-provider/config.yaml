@@ -1,9 +1,9 @@
 # okdp-system/local-secrets-provider: the OKDP package local-secrets-provider
 # (sandbox-charts), the sandbox's stand-in for a secret manager: Secrets whose
 # credentials are never in Git, generated once in the cluster by External Secrets
-# (generate) or read by it from the platform's secret store (remoteKey), their static
-# keys in data, replicated to the namespaces an entry's replicateTo names
-# (kubernetes-replicator, installed at the bootstrap).
+# (generate) or read by it from the keys of this namespace in the platform's secret
+# store (remoteKey, okdp-system/...), their static keys in data, in this namespace
+# only (no replication).
 # The Forgejo credentials are not here: scripts/configure.sh --push generates them and
 # writes each to the namespaces that use it only (Forgejo and its runner, forgejo,
 # okdp-system/okdp-control-plane-server). The platform's secret store, through which the

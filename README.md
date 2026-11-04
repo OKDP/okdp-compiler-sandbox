@@ -12,22 +12,26 @@ It installs the dependencies of the platform with Helm, as a company installs it
 
 The sandbox is for a single workstation, not a shared or reachable environment:
 
-- It ships **published demo credentials**: Keycloak admin `admin` / `admin`, console user
-  `adm` / `adm` and the other demo users of the realm (password = user name,
+- It ships **published demo credentials**: console user `adm` / `adm` and the other
+  demo users of the realm (password = user name,
   [`bootstrap/keycloak/realm.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/keycloak/realm.yaml): test fixtures to
   sign in with, not service credentials). Never reuse them, and never reuse these
-  values outside the sandbox.
+  values outside the sandbox. Keycloak's admin (`admin`) is not one of them: its
+  password is random, generated at the bootstrap (step 3, Secret
+  `keycloak/keycloak-admin`).
 - No client secret is in Git: the secret of each client of the realm is generated at
   the bootstrap (step 3, Secret `keycloak/keycloak-client-secrets`), imported into the
   realm, and written to OpenBao, the platform's secret store, under
-  `platform/keycloak/<client>`, where the Secrets of the instances read it
+  `<namespace>/keycloak/<client>` of the namespaces that read it (sandbox-charts'
+  [`bootstrap/openbao/clients.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/openbao/clients.yaml)), where the Secrets of the instances read it
   (`okdp-system/local-secrets-provider`, `demo/secrets`): Keycloak and the services
   hold the same value, the service accounts' (`okdp-control-plane`, the console's user
   and group management; `svc-*`, `superset-trino`) among them. The services' login
   clients register by DCR; with `clientProvisioning: existing`, JupyterHub's needs one
   step ([OAuth clients](#oauth-clients-of-the-services-optional)).
-- The credentials of Forgejo and of the S3 store are generated on your cluster, never
-  committed: Forgejo's admin (step 3), RustFS' root and the platform's access key
+- The credentials of Keycloak, Forgejo and the S3 store are generated on your cluster,
+  never committed: Keycloak's admin and the secrets of the realm's clients (step 3),
+  Forgejo's admin (step 3), RustFS' root and the platform's access key
   (step 3, External Secrets' generators), and those of `okdp-gitops`, the account the
   console and the CI write to the deployments repositories with (not an admin; its
   password in a Secret of the console's namespace only, a token of it in the Actions
@@ -40,8 +44,11 @@ The sandbox is for a single workstation, not a shared or reachable environment:
     that namespace ([`bootstrap/openbao/init.sh`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/openbao/init.sh)), lets it
     write its own keys (`<namespace>/*`: a provider's claims, its connections' keys),
     read its claims from any provider (`+/<namespace>.*`) and the platform's keys
-    (`platform/*`, written at the bootstrap), nothing else. The namespace `platform`
-    is reserved: nothing may run there;
+    (`platform/*`, written at the bootstrap: the S3 access key), nothing else. A
+    Keycloak client's secret is under the keys of the namespaces that read it
+    (`<namespace>/keycloak/<client>`), not the platform's. The namespace `platform`
+    is reserved: nothing may run there. Nothing else copies a Secret between
+    namespaces: the bootstrap installs no replicator;
   - the platform's own projects, `global.okdp.policy.privileged` of
     [`platform.yaml`](gitops/platform.yaml) (spark-operator, okdp-system), install
     cluster-scoped objects
@@ -65,11 +72,11 @@ The sandbox is for a single workstation, not a shared or reachable environment:
     containers are not and cannot reach it, but an escape from it is root on the
     node; the namespace `forgejo` admits privileged pods. A platform runs its CI
     outside the cluster, or on a builder without privilege;
-  - **the realm's client secrets are platform keys**, `platform/keycloak/<client>`,
-    which every namespace reads (and `local-secrets-provider` replicates its Secrets to
-    every namespace): a project could sign in as one of these clients,
-    `okdp-control-plane` (Keycloak's user management) included. A platform keeps a
-    credential only one namespace needs under that namespace's keys, unreplicated;
+  - **the platform's S3 access key is a platform key**, `platform/s3`, which every
+    namespace reads: a project could use the platform's S3 identity. A platform keeps
+    a credential only one namespace needs under that namespace's keys, unreplicated,
+    as the sandbox does for the realm's client secrets (`local-secrets-provider`
+    reads its namespace's keys only and copies its Secrets nowhere);
   - the published credentials above.
 - **Do not expose it beyond localhost.** The kind port mappings below listen on
   `127.0.0.1` only; keep it that way (no `0.0.0.0`, no port forwarding from other hosts).
@@ -86,11 +93,11 @@ The platform's dependencies ([`bootstrap/`](https://github.com/OKDP/sandbox-char
 | cert-manager, trust-manager, the cluster issuer `default-issuer` (a CA minted in the cluster) and the CA bundle of every namespace | `cert-manager`, `trust-manager` (jetstack), `cert-issuers` (quay.io/okdp/charts) | `global.okdp.tls`: the issuer of every certificate, the Secret `certs-bundle` the services mount |
 | ingress-nginx, on the node ports kind maps to the host | `ingress-nginx` | `global.okdp.ingress`: the class `nginx` of every ingress |
 | The cluster's CoreDNS answering `*.okdp.sandbox` with the ingress controller ([`patch.sh`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/coredns/patch.sh)), the host's DNS server (node port 30053) | `coredns` | the services reach each other, Keycloak first, by their public names |
-| The replicator and Reloader, the deletion protection ([`policies.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/protection/policies.yaml)) | `kubernetes-replicator`, `reloader` | Secrets copied where `replicateTo` says, workloads restarted when their Secrets change, `okdp.io/protected` objects and the operators' CRDs not deleted |
+| Reloader, the deletion protection ([`policies.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/protection/policies.yaml)) | `reloader` | workloads restarted when their Secrets change, `okdp.io/protected` objects and the operators' CRDs not deleted |
 | CloudNativePG, the PostgreSQL operator | `cloudnative-pg` | the platform's database server (`cnpg-system/cnpg-postgresql`) runs on it |
 | External Secrets | `external-secrets` | the SecretStore the compiler writes in each project's namespace, over the secret store |
 | OpenBao, the platform's secret store: its KV mount `okdp`, the Kubernetes auth and the policy of the namespaces, the platform's keys | `openbao` | `global.okdp.secrets`: what crosses namespaces (the S3 access key, the secrets of Keycloak's clients, the claims' credentials), each namespace its own keys |
-| Keycloak, its PostgreSQL and its realm (users, roles, clients and their secrets, generated, the services' anonymous client registration) | `keycloakx` (codecentric) | `global.okdp.oidc`; its clients' secrets in the secret store (`platform/keycloak/<client>`) |
+| Keycloak, its PostgreSQL and its realm (users, roles, clients and their secrets, generated, the services' anonymous client registration) | `keycloakx` (codecentric) | `global.okdp.oidc`; its clients' secrets in the secret store, under the keys of the namespaces that read them (`<namespace>/keycloak/<client>`) |
 | RustFS, the S3 store, its buckets and the platform's access key | `rustfs` | the connection `platform-s3` (contract `s3`), its credentials in the secret store (`platform/s3`) |
 | Forgejo, the deployments repositories and the service catalogs | `forgejo` | the control plane server's settings |
 | The CI runner of the deployments repositories, each compile a container of the okdp-gitops image on its Docker daemon | [`forgejo-runner`](https://github.com/OKDP/sandbox-charts/tree/main/bootstrap/forgejo-runner) (this repository's chart) | registered by `scripts/configure.sh --push` for each repository of the tree |
@@ -133,7 +140,7 @@ GitOps user ──────────────────────�
 - Git, on the in-cluster Forgejo, is the only desired state. The console commits the tree there; so can you, a plain commit. The tree is compiled whole ([okdp-compiler](https://github.com/OKDP/okdp-compiler)), each instance into an umbrella chart over the upstream charts of its service and the one values file it is installed with, with the Argo CD and Flux files of its targets, `compiled/` of the output repository, by [okdp-gitops](https://github.com/OKDP/okdp-gitops), the Git around the compiler: by the CI on each push to the tree (the workflow `.forgejo/workflows/okdp-gitops.yaml` of each repository of the tree, run by the Forgejo Actions runner [`forgejo-runner`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/forgejo-runner/values.yaml) of the bootstrap), and by `scripts/configure.sh --push` for the layout of this repository, which it pushes compiled. A push that does not compile writes nothing: the engine keeps deploying the last output. Argo CD or Flux deploys `compiled/`. This repository holds no compiled file: only what bootstraps the sandbox.
 - On Forgejo, the layout lives in one deployments repository, `okdp-deployments` (`mono`), in an input and an output repository (`io`), or in a platform repository, one repository per project and an output repository (`split`): the **topology**, chosen with `scripts/configure.sh` ([Topologies](gitops/README.md#topologies)). Argo CD and Flux read the output repository only.
 - The packages come from Git, not from a chart registry: the catalogs [platform-charts](https://github.com/OKDP/platform-charts), [sandbox-charts](https://github.com/OKDP/sandbox-charts) and [community-charts](https://github.com/OKDP/community-charts) (`catalog/<service>/<version>/`, one directory per package version, and the contracts of the connections), copied to the in-cluster Forgejo, where the control plane server reads them ([Service catalogs](gitops/README.md#service-catalogs)). The upstream charts come from their own repositories.
-- The platform's dependencies are not compiled: cert-manager, ingress-nginx, the DNS, the tools, CloudNativePG, External Secrets, Keycloak, the S3 store, OpenBao, Forgejo and its CI runner, and the engine, are installed with Helm first ([`bootstrap/`](https://github.com/OKDP/sandbox-charts/tree/main/bootstrap), step 3), and the compiled tree reaches them through the platform's settings (`global.okdp.oidc`, `global.okdp.secrets`) and connections: the S3 store is the platform connection `platform-s3` (`connections` of [`platform.yaml`](gitops/platform.yaml)), its endpoints and bucket, its credentials a key of the platform's secret store (`platform/s3`), which the compiler reads into each instance's namespace; Keycloak is `global.okdp.oidc`, and its clients' secrets, generated at the bootstrap, keys of the store too (`platform/keycloak/<client>`), which `local-secrets-provider` reads into the Secrets of the services. Any S3-compatible store OKDP does not manage takes its place the same way.
+- The platform's dependencies are not compiled: cert-manager, ingress-nginx, the DNS, the tools, CloudNativePG, External Secrets, Keycloak, the S3 store, OpenBao, Forgejo and its CI runner, and the engine, are installed with Helm first ([`bootstrap/`](https://github.com/OKDP/sandbox-charts/tree/main/bootstrap), step 3), and the compiled tree reaches them through the platform's settings (`global.okdp.oidc`, `global.okdp.secrets`) and connections: the S3 store is the platform connection `platform-s3` (`connections` of [`platform.yaml`](gitops/platform.yaml)), its endpoints and bucket, its credentials a key of the platform's secret store (`platform/s3`), which the compiler reads into each instance's namespace; Keycloak is `global.okdp.oidc`, and its clients' secrets, generated at the bootstrap, keys of the store too, under the keys of the namespaces that read them (`<namespace>/keycloak/<client>`), which `local-secrets-provider` reads into the Secrets of the services. Any S3-compatible store OKDP does not manage takes its place the same way.
 - The databases of the services are **claims**: a service asks for a database of its own, and the platform's database server (`cnpg-system/cnpg-postgresql`), the provider of the platform's class (`global.okdp.provisioning` of [`platform.yaml`](gitops/platform.yaml)), creates it and publishes its connection, its credentials crossing namespaces through the platform's secret store ([Claims](gitops/README.md#claims)). A project may declare named claims too, shared by its services (`claims` of its `project.yaml`). A service may claim a bucket the same way (`{}` in place of an `s3` connection's name): the provider of the platform's class, `s3-system/s3-minio-provisioner`, creates it on the S3 store of the bootstrap, with an identity limited to it, through MinIO's admin API, as the provisioning identity the bootstrap generates (a key of `s3-system` in OpenBao). No service of the sandbox claims one: they name the platform's connection `platform-s3`.
 - The secret store, OpenBao, keeps the namespaces apart: the compiler writes in each project's namespace a ServiceAccount and a SecretStore of External Secrets that signs in to OpenBao as that ServiceAccount (`global.okdp.secrets.provider`), and OpenBao's policy, templated on the namespace, lets a namespace write its own keys (`<namespace>/*`, a provider's claims), read its claims from any provider (`+/<namespace>.*`) and the platform's keys (`platform/*`), nothing else ([`bootstrap/openbao/init.sh`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/openbao/init.sh)). A Vault or a cloud secret manager takes OpenBao's place with the same policy and its own provider in `platform.yaml`.
 
@@ -328,7 +335,9 @@ included (`--dir ../sandbox-charts/bootstrap`). It needs `helm`, `yq`, `jq`, `aw
 
 Their ingresses (`keycloak`, `s3`, `s3-console`, `forgejo` `.okdp.sandbox`) are served
 by the ingress controller installed first. The
-Forgejo admin's password, for its web UI:
+Keycloak admin's password, for its admin console (user `admin`):
+`kubectl -n keycloak get secret keycloak-admin -o jsonpath='{.data.admin-password}' | base64 -d`;
+the Forgejo admin's password, for its web UI:
 `kubectl -n forgejo get secret okdp-forgejo-admin -o jsonpath='{.data.password}' | base64 -d`;
 RustFS' root, for its console:
 `kubectl -n rustfs get secret rustfs-root -o jsonpath='{.data.RUSTFS_SECRET_KEY}' | base64 -d`
@@ -505,7 +514,7 @@ Secret `<release>-<namespace>-dcr`. The Job runs `quay.io/adaltas/oidc-dcr-job`.
 The console's own client (`okdp-ui`) stays declared in the Keycloak realm. The alternative is
 `clientProvisioning: existing` (drop the `dcr` block): the services then use the clients declared in
 the realm and their Secrets `creds-<release>-oauth2` (`projects/demo/instances/secrets`), whose
-`client_secret` is the realm's, read from OpenBao (`platform/keycloak/<client>`, step 3).
+`client_secret` is the realm's, read from OpenBao (`demo/keycloak/<client>`, step 3).
 JupyterHub's Secret is generated whole, with the crypt key of its users' auth state (an entry of
 `local-secrets-provider` generates or reads, not both): its `client_secret` is not the realm's.
 Give it to the realm once, then the Keycloak release imports it and keeps it:
@@ -546,7 +555,7 @@ to Keycloak.
 ## Using the sandbox
 
 1. **Console**: https://okdp-ui.okdp.sandbox, login `adm` / `adm` (Keycloak). Keycloak's
-   admin console: https://keycloak.okdp.sandbox (`admin` / `admin`); the S3 store's:
+   admin console: https://keycloak.okdp.sandbox (`admin`, its password in step 3); the S3 store's:
    https://s3-console.okdp.sandbox (`okdp-root`, its password in step 3).
 2. **The demo project** is deployed with the platform: `projects/demo` in Git, namespace
    `demo`. Its services appear in the console like the ones you deploy from it.

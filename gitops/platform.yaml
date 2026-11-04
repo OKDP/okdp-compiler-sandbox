@@ -48,7 +48,7 @@ global:
     #     (the realm's clients) and their credentials put in Secrets creds-<release>-oauth2
     #     (projects/demo/instances/secrets, each client_secret the realm's, generated at
     #     the bootstrap and read from the platform's secret store,
-    #     platform/keycloak/<client>; JupyterHub's generated with its crypt key); drop
+    #     demo/keycloak/<client>; JupyterHub's generated with its crypt key); drop
     #     the dcr block.
     oidc:
       enabled: true

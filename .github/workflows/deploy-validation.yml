@@ -80,12 +80,12 @@ env:
   # sha256 of kind-linux-amd64 ${KIND_VERSION}, from the release's
   # kind-linux-amd64.sha256sum. Update both together.
   KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
-  # TODO(okdp-compiler): main, then a release, once the okdp-compiler branches land.
-  OKDP_CONTROL_PLANE_SERVER_REF: okdp-compiler
-  # TODO(okdp-compiler): main, then releases, once the feat/claim-provisioner branches
-  # land: the tree of okdp-compiler and okdp-gitops reduced to Git.
-  OKDP_GITOPS_REF: feat/claim-provisioner
-  OKDP_COMPILER_REF: feat/claim-provisioner
+  # The commits the sandbox is tested with, fetched by SHA (a branch moves under
+  # the test). TODO(okdp-compiler): releases, once the feat/claim-provisioner
+  # branches land. Bump the three together.
+  OKDP_CONTROL_PLANE_SERVER_REF: 06c90c0b46bba0d032c2f1f704fc6fb538d8fc30
+  OKDP_GITOPS_REF: b2bb34dfd3b68405ffa971f48b3263828c2bdfa8
+  OKDP_COMPILER_REF: 94e7e2d6712854a09b95aec1caac22a4068714a3
   E2E_SERVER_IMAGE: okdp-control-plane-server:e2e
   E2E_GITOPS_IMAGE: okdp-gitops:e2e
   E2E_LOAD_IMAGES: okdp-control-plane-server:e2e okdp-gitops:e2e
@@ -123,9 +123,15 @@ jobs:
       - name: Clone okdp-control-plane-server, okdp-gitops, okdp-compiler and the service catalogs 📥
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch "${OKDP_CONTROL_PLANE_SERVER_REF}" https://github.com/OKDP/okdp-control-plane-server.git ../okdp-control-plane-server
-          git clone --depth 1 --branch "${OKDP_GITOPS_REF}" https://github.com/OKDP/okdp-gitops.git ../okdp-gitops
-          git clone --depth 1 --branch "${OKDP_COMPILER_REF}" https://github.com/OKDP/okdp-compiler.git ../okdp-compiler
+          fetch() { # <repository> <commit>: ../<repository> at that commit
+            git init -q "../$1"
+            git -C "../$1" remote add origin "https://github.com/OKDP/$1.git"
+            git -C "../$1" fetch -q --depth 1 origin "$2"
+            git -C "../$1" checkout -q FETCH_HEAD
+          }
+          fetch okdp-control-plane-server "${OKDP_CONTROL_PLANE_SERVER_REF}"
+          fetch okdp-gitops "${OKDP_GITOPS_REF}"
+          fetch okdp-compiler "${OKDP_COMPILER_REF}"
           # The catalogs, at the ref gitops/catalogs.yaml names, not shallow:
           # e2e-kind.sh pushes them to the cluster's Forgejo (yq is preinstalled).
           yq -r '.repositories[] | [.name, .ref] | @tsv' gitops/catalogs.yaml \
