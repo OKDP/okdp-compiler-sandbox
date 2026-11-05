@@ -22,11 +22,12 @@ gitops:
       path: ""
   # argocd or flux: set it to the engine that deploys the output repository.
   engine: argocd
-  # The Forgejo user okdp-gitops, not an admin, which writes to the repositories of the
-  # topology only (the server commits to the sources; the output is the CI's):
-  # scripts/configure.sh --push creates it and writes this Secret in the server's
-  # namespace, never in Git.
-  credentialsSecret: okdp-gitops-bot
+  # The Forgejo user okdp-console, not an admin, which writes to the repositories of
+  # the sources only and reads the output and the catalogs (the output is the CI's,
+  # okdp-ci's alone): scripts/configure.sh --push creates it and writes this Secret in
+  # the server's namespace, never in Git: username okdp-console, password an access
+  # token of it (write:repository), no password of the account.
+  credentialsSecret: okdp-console-git
   # The upstream charts of the instances, pulled for the checks of each compile.
   chartCacheDir: /var/cache/okdp/charts
 # User and group management through the Keycloak Admin API (URL and realm from the

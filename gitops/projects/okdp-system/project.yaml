@@ -2,4 +2,7 @@
 # Its context (level 1, over platform.yaml): its settings under global, its classes
 # beside the platform's (global.okdp.provisioning), its connections and its named
 # claims; none here.
+# Its people: no access, the default, {okdp-project-okdp-system: editor}, a Keycloak group
+# without members (sandbox-charts' bootstrap/keycloak/realm.yaml): the platform's
+# administrators run it.
 description: The OKDP Control Plane, server and console, and the demo Secrets of the platform

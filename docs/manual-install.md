@@ -453,7 +453,7 @@ Keycloak.
 ## Using the platform
 
 Sign in with Keycloak, as `adm` / `adm` (realm role `platform_admin`), or another demo user
-of the realm, [`bootstrap/keycloak/realm.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/keycloak/realm.yaml).
+of the realm `okdp`, [`bootstrap/keycloak/realm.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/keycloak/realm.yaml).
 
 | Service | URL |
 |---|---|

@@ -20,7 +20,8 @@
 #   kubectl apply -f gitops/flux/sync.yaml
 # GitRepository okdp-gitops is the output repository, the only one Flux reads,
 # authenticated with the Secret okdp-gitops-reader (secretRef), created by
-# scripts/configure.sh --push (forgejo_engine_secrets):
+# scripts/configure.sh --push (forgejo_engine_secrets): a read token of the Forgejo
+# user okdp-reader, who reads the output repository only;
 # okdp-output, a repository of its own in every topology, which the CI alone writes;
 # compiled/ at its root. scripts/configure.sh --topology rewrites its URL.
 # The Kustomization okdp syncs the whole compiled tree: compiled/projects/
@@ -59,6 +60,14 @@ spec:
 ---
 # No wait: one broken instance must not block the others; a HelmRelease waits for the
 # releases it depends on (dependsOn), and retries until the CRDs of an operator exist.
+# Applied as kustomize-controller's own ServiceAccount, whose cluster-admin binding the
+# Flux install gives: kustomize-controller runs with
+# --default-service-account=okdp-none (README, step 5b), which a Kustomization
+# without serviceAccountName would impersonate, with no permission; this one writes
+# the Namespaces, the RBAC of the projects (the ServiceAccounts project-<p> and their
+# bindings, the RoleBindings of project/access.yaml to view, edit and admin, the
+# control plane's Role: a RoleBinding grants no more than its applier holds) and the
+# HelmReleases.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -71,6 +80,7 @@ spec:
     kind: GitRepository
     name: okdp-gitops
   path: ./compiled/projects
+  serviceAccountName: kustomize-controller
   prune: true
   # A project's namespace is kept when the project is removed (its volumes with it,
   # until an administrator deletes it), as Argo CD's Delete=false: never pruned.

@@ -25,17 +25,27 @@
 #   secret-store.yaml  the ServiceAccount okdp-secrets and the SecretStore
 #                      okdp-secrets of <p>, through which it reaches the platform's
 #                      secret store (global.okdp.secrets);
+#   access.yaml        the RoleBindings okdp-access-<role> of <p>, its people's
+#                      groups (project.yaml access, by default okdp-project-<p>
+#                      editor) bound to the ClusterRoles view, edit and admin;
+#   control-plane.yaml the Role and RoleBinding okdp-control-plane of <p>, what the
+#                      control plane's ServiceAccount does there
+#                      (global.okdp.controlPlane of platform.yaml), when it is set;
 #   appproject.yaml    AppProject project-<p> in argocd, which the Applications of
 #                      its instances name: sources the output repository; destined
 #                      to namespace <p> only, no cluster-scoped kind, for a project
 #                      that is not the platform's; every namespace and kind for one
-#                      of the platform's own.
+#                      of the platform's own; its roles viewer, editor and admin,
+#                      the groups of project.yaml access.
 # The same directory holds the files of the Flux target (kustomization.yaml,
 # service-account.yaml, the identity of helm-controller in okdp-releases), which
-# Argo CD does not apply: only the three files above are included. The
+# Argo CD does not apply: only the five files above are included. The
 # Applications are of the entry point's AppProject okdp, which may write the
-# Namespaces and the AppProjects (project.yaml); the instances' Applications wait,
-# retried, for their AppProject and their namespace. Argo CD reads the output
+# Namespaces, the AppProjects, the Roles and the RoleBindings (project.yaml); Argo
+# CD's application controller, whose identity applies them, holds every
+# permission, those of view, edit, admin and of the control plane's Role among them
+# (a RoleBinding grants no more than its applier holds). The instances'
+# Applications wait, retried, for their AppProject and their namespace. Argo CD reads the output
 # repository only. <p> is the directory name, never a value read from a file of
 # the project.
 # The ApplicationSet and its Applications are named with a dot, which no release,
@@ -73,7 +83,7 @@ spec:
         # A plain directory, explicitly: Argo CD would read it as a Kustomize
         # application (the Flux target's kustomization.yaml).
         directory:
-          include: '{namespace.yaml,secret-store.yaml,appproject.yaml}'
+          include: '{namespace.yaml,secret-store.yaml,access.yaml,control-plane.yaml,appproject.yaml}'
       destination:
         server: https://kubernetes.default.svc
         namespace: argocd

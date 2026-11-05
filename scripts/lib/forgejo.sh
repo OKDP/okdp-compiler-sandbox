@@ -21,17 +21,32 @@
 # kubectl port-forward of the current context (KUBECONFIG), or at FORGEJO_URL when set
 # (e.g. http://localhost:3000), with its admin account, of the Secret
 # gitea.admin.existingSecret of its values (README, step 3). Its API creates the
-# organization, the repositories (private) and the account the console and the CI
-# write with (forgejo_bot). The CI is the output repository's alone: its workflow
-# (forgejo_output_workflow: a compile of the sources on a schedule), its Actions,
-# its runner (forgejo_register_runner) and its token, the only one, in its Actions
-# secret OKDP_GITOPS_TOKEN (forgejo_ci_token); the repositories of the sources hold
-# no workflow, no secret and no runner, their Actions off. Branch protection on the
-# output repository's main lets the bot alone push there (forgejo_protect_branch);
-# the engines get a read token (forgejo_engine_secrets). Git pushes the sources with
-# the admin account and the output with the bot's, through GIT_ASKPASS (never in a
-# URL or on a command line). With DRY_RUN=true, nothing is called: each action is
-# printed, the parts are still built in $WORK.
+# organization, the repositories (private) and the accounts of the topology, none an
+# admin, each reaching its repositories through teams of the organization only
+# (forgejo_accounts):
+#   okdp-ci       the CI: writes the output repository, the only account its main
+#                 takes a push of (forgejo_protect_branch), reads the sources and the
+#                 catalogs; its token, write:repository, the output repository's
+#                 Actions secret OKDP_GITOPS_TOKEN (forgejo_ci_token), nowhere else;
+#   okdp-reader   the engines (Argo CD, Flux): reads the output repository only; its
+#                 token, read:repository, in their Secrets (forgejo_engine_secrets);
+#   okdp-console  the control plane, only when the layout installs it (the instance
+#                 okdp-control-plane-server): writes the sources (split: may create
+#                 the repositories of new projects), reads the output and the
+#                 catalogs, never writes the output; its tokens in the server's
+#                 Secrets (forgejo_console_secrets), never a password.
+# People push the sources with their own accounts, signed in through Keycloak, their
+# teams from their groups (forgejo_people_teams, forgejo_sign_in).
+# Nobody keeps the accounts' passwords: each run sets a new random one, which creates
+# their tokens (the account's previous ones deleted), then is forgotten. The CI is
+# the output repository's alone: its workflow (forgejo_output_workflow: a compile of
+# the sources on a schedule), its Actions, its runner (forgejo_register_runner) and
+# its token, the only one; the repositories of the sources hold no workflow, no
+# secret and no runner, their Actions off. Git pushes the sources with the admin
+# account and the output with okdp-ci's token, through GIT_ASKPASS (never in a URL or
+# on a command line); the API gets the credentials in a curl config file and the
+# bodies on curl's standard input. With DRY_RUN=true, nothing is called: each action
+# is printed, the parts are still built in $WORK.
 #
 # Requires curl, jq, kubectl (port-forward, the Secrets, the runner's registration),
 # git.
@@ -42,13 +57,19 @@
 FORGEJO_VALUES="${FORGEJO_VALUES:-}"
 FORGEJO_NAMESPACE="${FORGEJO_NAMESPACE:-forgejo}"
 DRY_RUN="${DRY_RUN:-false}"
-# The account the console and the CI write to the repositories of the topology with,
-# and its team in the organization (forgejo_bot); its team that reads the catalogs.
-FORGEJO_BOT=okdp-gitops
-FORGEJO_BOT_READ_TEAM=okdp-gitops-read
+# The accounts of the topology (forgejo_accounts), each with teams of its name.
+FORGEJO_CI=okdp-ci
+FORGEJO_READER=okdp-reader
+FORGEJO_CONSOLE=okdp-console
+# The single account of an older sandbox, the console's, the CI's and the engines'
+# at once, and its teams: deleted (forgejo_legacy_cleanup); the console's Secret of
+# its password, before gitops.credentialsSecret was renamed.
+FORGEJO_LEGACY_BOT=okdp-gitops
+FORGEJO_LEGACY_TEAMS=(okdp-gitops okdp-gitops-read)
+FORGEJO_LEGACY_CONSOLE_SECRET=okdp-gitops-bot
 # The catalogs of the organization copied to Forgejo (forgejo_push_catalogs), which
-# the bot reads (forgejo_bot): the CI's compile and the console fetch them with its
-# credentials, the repositories being private.
+# the CI and the console read (forgejo_accounts): the CI's compile and the console
+# fetch them with their credentials, the repositories being private.
 FORGEJO_CATALOG_REPOS=()
 
 dry() { echo "[dry-run] $*"; }
@@ -172,19 +193,35 @@ forgejo_admin_login() {
 curl_quote() { local s="${1//\\/\\\\}"; printf '%s' "${s//\"/\\\"}"; }
 
 # forgejo_api METHOD PATH [JSON]: calls the API as the admin (basic auth, given to
-# curl as a config file, not on its command line); FORGEJO_STATUS is the HTTP
-# status, the body is in FORGEJO_BODY.
+# curl as a config file, the body on its standard input: neither on its command
+# line); FORGEJO_STATUS is the HTTP status, the body is in FORGEJO_BODY.
 forgejo_api() { forgejo_api_as "$FORGEJO_USER" "$FORGEJO_PASSWORD" "$@"; }
 
 # forgejo_api_as USER PASSWORD METHOD PATH [JSON]: forgejo_api, as USER.
 forgejo_api_as() {
   local user="$1" password="$2" data=()
   shift 2
-  [[ -z "${3:-}" ]] || data=(--data "$3")
-  FORGEJO_STATUS="$(curl -sS -o "$FORGEJO_BODY" -w '%{http_code}' -X "$1" \
+  [[ -z "${3:-}" ]] || data=(--data-binary @-)
+  FORGEJO_STATUS="$(printf '%s' "${3:-}" | curl -sS -o "$FORGEJO_BODY" -w '%{http_code}' -X "$1" \
     -H 'Accept: application/json' -H 'Content-Type: application/json' \
     -K <(printf 'user = "%s:%s"\n' "$(curl_quote "$user")" "$(curl_quote "$password")") \
     "${data[@]}" "$FORGEJO/api/v1$2")" || FORGEJO_STATUS=000
+}
+
+# forgejo_list PATH: every item of a list of the API (all its pages), as the admin,
+# one JSON array on stdout; fails (forgejo_fail) on an error.
+forgejo_list() {
+  local sep='?' page=1 all='[]' n
+  [[ "$1" != *'?'* ]] || sep='&'
+  while :; do
+    forgejo_api GET "$1${sep}limit=50&page=$page"
+    [[ "$FORGEJO_STATUS" == 200 ]] || forgejo_fail "cannot list $1"
+    n="$(jq 'length' "$FORGEJO_BODY")"
+    all="$(jq -c --argjson a "$all" '$a + .' "$FORGEJO_BODY")"
+    (( n == 50 )) || break
+    page=$((page + 1))
+  done
+  printf '%s\n' "$all"
 }
 
 forgejo_fail() { # MESSAGE
@@ -278,16 +315,16 @@ forgejo_push_ref() {
   echo "pushed $4/$5 $ref (${commit:0:12})"
 }
 
-# forgejo_push_tree DIR OWNER NAME MESSAGE [--force] [--as-bot]: makes the files of
+# forgejo_push_tree DIR OWNER NAME MESSAGE [--force] [--as-ci]: makes the files of
 # DIR the content of branch main of OWNER/NAME: one commit on top of its main (none
 # when nothing changed), whose history is kept. MESSAGE starts with "okdp-sandbox ":
 # when main has, since its last such commit, a commit other than the CI's ("okdp:
 # compile", forgejo/forgejo-runner: the compile of the sources), someone committed
 # since the last push (the console, a person), and the push is refused, unless
-# --force (their changes are then replaced). --as-bot pushes as FORGEJO_BOT
-# (forgejo_bot first), the only account the output repository's main takes a push of
-# (forgejo_protect_branch); else as the admin. A push that loses the race against the
-# CI (a scheduled compile) is made again on top of the CI's commit.
+# --force (their changes are then replaced). --as-ci pushes as FORGEJO_CI with its
+# token (forgejo_ci_token first), the only account the output repository's main takes
+# a push of (forgejo_protect_branch); else as the admin. A push that loses the race
+# against the CI (a scheduled compile) is made again on top of the CI's commit.
 forgejo_push_tree() {
   local dir="$1" owner="$2" name="$3" message="$4" forced=false user password
   local url repo tree commit other attempt parent=()
@@ -296,7 +333,7 @@ forgejo_push_tree() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --force) forced=true ;;
-      --as-bot) user="$FORGEJO_BOT"; password="${FORGEJO_BOT_PASSWORD:-}" ;;
+      --as-ci) user="$FORGEJO_CI"; password="${FORGEJO_CI_TOKEN:-}" ;;
       *) die "forgejo_push_tree: unknown option $1" ;;
     esac
     shift
@@ -425,58 +462,78 @@ forgejo_register_runner() {
   fi
 }
 
-# forgejo_ci_token OWNER OUTPUT_REPO SOURCE_REPO...: the token of the CI, the only
-# one: an access token of FORGEJO_BOT (write:repository), replaced at each push, in
-# the Actions secret OKDP_GITOPS_TOKEN of the output repository only, whose workflow
-# reads the sources and writes the output with it. Whoever can push a workflow to a
-# repository can read its secrets: the repositories of the sources, which every
-# writer of the tree pushes to, hold none; an older sandbox's secrets there
-# (OKDP_GITOPS_TOKEN, OKDP_DISPATCH_TOKEN) are deleted, and its dispatch token too.
-forgejo_ci_token() {
-  local owner="$1" output="$2" name=okdp-gitops-ci token repo secret
-  shift 2
-  if $DRY_RUN; then
-    dry "access token $name of $FORGEJO_BOT (write:repository) -> Actions secret OKDP_GITOPS_TOKEN of $owner/$output"
-    dry "Actions secrets OKDP_GITOPS_TOKEN and OKDP_DISPATCH_TOKEN of ${*/#/$owner/}: deleted"
-    return
-  fi
-  forgejo_api_as "$FORGEJO_BOT" "$FORGEJO_BOT_PASSWORD" DELETE "/users/$FORGEJO_BOT/tokens/$name"
-  [[ "$FORGEJO_STATUS" == 204 || "$FORGEJO_STATUS" == 404 ]] || forgejo_fail "cannot delete the token $name"
-  forgejo_api_as "$FORGEJO_BOT" "$FORGEJO_BOT_PASSWORD" POST "/users/$FORGEJO_BOT/tokens" "$(jq -cn --arg n "$name" \
-    '{name: $n, scopes: ["write:repository"]}')"
-  [[ "$FORGEJO_STATUS" == 201 ]] || forgejo_fail "cannot create the token $name"
-  token="$(jq -r '.sha1' "$FORGEJO_BODY")"
-  rm -f "$FORGEJO_BODY"
-  forgejo_api PUT "/repos/$owner/$output/actions/secrets/OKDP_GITOPS_TOKEN" "$(jq -cn --arg t "$token" '{data: $t}')"
-  [[ "$FORGEJO_STATUS" == 201 || "$FORGEJO_STATUS" == 204 ]] \
-    || forgejo_fail "cannot write the Actions secret OKDP_GITOPS_TOKEN of $owner/$output"
-  echo "Actions secret OKDP_GITOPS_TOKEN of $owner/$output: the access token $name of $FORGEJO_BOT"
-  # An older sandbox's: the token in the sources, the dispatch token.
-  for repo in "$@"; do
-    for secret in OKDP_GITOPS_TOKEN OKDP_DISPATCH_TOKEN; do
-      forgejo_api DELETE "/repos/$owner/$repo/actions/secrets/$secret"
-      [[ "$FORGEJO_STATUS" == 204 || "$FORGEJO_STATUS" == 404 ]] \
-        || forgejo_fail "cannot delete the Actions secret $secret of $owner/$repo"
-    done
+# forgejo_user NAME DESCRIPTION: the account NAME, created if missing, never an admin
+# (made one no longer if it was), with a new random password, kept for this run only
+# in FORGEJO_PASSWORDS (forgejo_token creates its tokens with it), written nowhere:
+# the account signs in with its tokens only. Its previous tokens are deleted: it has
+# none but the ones this run creates.
+declare -A FORGEJO_PASSWORDS=()
+forgejo_user() {
+  local user="$1" password tokens t
+  if $DRY_RUN; then dry "user $user (not an admin; $2): created if missing, a new random password nobody keeps, its previous tokens deleted"; return; fi
+  password="$(random_hex 24)"
+  forgejo_api GET "/users/$user"
+  case "$FORGEJO_STATUS" in
+    404)
+      forgejo_api POST /admin/users "$(jq -cn --arg u "$user" --arg p "$password" --arg d "$2" \
+        '{username: $u, email: ($u + "@okdp.io"), full_name: $d, password: $p, must_change_password: false, visibility: "private"}')"
+      [[ "$FORGEJO_STATUS" == 201 ]] || forgejo_fail "cannot create the user $user"
+      echo "user $user: created"
+      ;;
+    200)
+      forgejo_api PATCH "/admin/users/$user" "$(jq -cn --arg u "$user" --arg p "$password" --arg d "$2" \
+        '{login_name: $u, source_id: 0, full_name: $d, password: $p, must_change_password: false, admin: false}')"
+      [[ "$FORGEJO_STATUS" == 200 ]] || forgejo_fail "cannot update the user $user"
+      ;;
+    *) forgejo_fail "user $user" ;;
+  esac
+  FORGEJO_PASSWORDS[$user]="$password"
+  forgejo_api_as "$user" "$password" GET "/users/$user/tokens?limit=50"
+  [[ "$FORGEJO_STATUS" == 200 ]] || forgejo_fail "cannot list the tokens of $user"
+  tokens="$(jq -r '.[].name' "$FORGEJO_BODY")"
+  for t in $tokens; do
+    forgejo_api_as "$user" "$password" DELETE "/users/$user/tokens/$t"
+    [[ "$FORGEJO_STATUS" == 204 || "$FORGEJO_STATUS" == 404 ]] || forgejo_fail "cannot delete the token $t of $user"
   done
-  forgejo_api_as "$FORGEJO_BOT" "$FORGEJO_BOT_PASSWORD" DELETE "/users/$FORGEJO_BOT/tokens/okdp-gitops-dispatch"
-  [[ "$FORGEJO_STATUS" == 204 || "$FORGEJO_STATUS" == 404 ]] || forgejo_fail "cannot delete the token okdp-gitops-dispatch"
-  echo "repositories of the sources ${*/#/$owner/}: no Actions secret"
 }
 
-# forgejo_team OWNER NAME PERMISSION CREATE DESCRIPTION REPOSITORY...: the team NAME
-# of the organization OWNER, created or updated: PERMISSION (read, write) on the code
-# of REPOSITORY... (names of OWNER's repositories) only, never every repository, and,
-# with CREATE=true, may create repositories; its member FORGEJO_BOT.
+# forgejo_token USER NAME SCOPE...: FORGEJO_TOKEN, a new access token NAME of USER
+# (forgejo_user first) with these scopes only.
+forgejo_token() {
+  local user="$1" name="$2" password
+  shift 2
+  password="${FORGEJO_PASSWORDS[$user]:-}"
+  [[ -n "$password" ]] || die "forgejo_token: no password of $user in this run (forgejo_user first)"
+  forgejo_api_as "$user" "$password" DELETE "/users/$user/tokens/$name"
+  [[ "$FORGEJO_STATUS" == 204 || "$FORGEJO_STATUS" == 404 ]] || forgejo_fail "cannot delete the token $name of $user"
+  forgejo_api_as "$user" "$password" POST "/users/$user/tokens" \
+    "$(jq -cn --arg n "$name" '{name: $n, scopes: $ARGS.positional}' --args "$@")"
+  [[ "$FORGEJO_STATUS" == 201 ]] || forgejo_fail "cannot create the token $name of $user"
+  FORGEJO_TOKEN="$(jq -r '.sha1' "$FORGEJO_BODY")"
+  rm -f "$FORGEJO_BODY"
+}
+
+# forgejo_team OWNER NAME PERMISSION CREATE DESCRIPTION MEMBER REPOSITORY...: the team
+# NAME of the organization OWNER, created or updated: PERMISSION (read, write) on the
+# code of REPOSITORY... (names of OWNER's repositories) exactly, its other
+# repositories removed, or with the single REPOSITORY "*" on every repository of OWNER
+# (those created later included); never another unit; with CREATE=true, may create
+# repositories. MEMBER is its only member (its other members removed), or "" for a
+# team of people, whose members Forgejo keeps from their Keycloak groups.
 forgejo_team() {
-  local owner="$1" name="$2" permission="$3" create="$4" description="$5" body team repo
-  shift 5
-  body="$(jq -cn --arg n "$name" --arg d "$description" --arg p "$permission" --argjson c "$create" \
-    '{name: $n, description: $d, permission: $p, includes_all_repositories: false,
+  local owner="$1" name="$2" permission="$3" create="$4" description="$5" member="$6"
+  local all=false body team list m r
+  shift 6
+  if [[ "$*" == "*" ]]; then all=true; set --; fi
+  if $DRY_RUN; then
+    dry "team $name of $owner: $permission on $($all && echo "every repository of $owner" || echo "${*:-no repository}")$($create && echo ', may create repositories')${member:+, its only member $member}"
+    return
+  fi
+  body="$(jq -cn --arg n "$name" --arg d "$description" --arg p "$permission" --argjson c "$create" --argjson a "$all" \
+    '{name: $n, description: $d, permission: $p, includes_all_repositories: $a,
       can_create_org_repo: $c, units: ["repo.code"], units_map: {"repo.code": $p}}')"
-  forgejo_api GET "/orgs/$owner/teams?limit=50"
-  [[ "$FORGEJO_STATUS" == 200 ]] || forgejo_fail "teams of $owner"
-  team="$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' "$FORGEJO_BODY")"
+  list="$(forgejo_list "/orgs/$owner/teams")" || exit 1
+  team="$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' <<<"$list")"
   if [[ -z "$team" ]]; then
     forgejo_api POST "/orgs/$owner/teams" "$body"
     [[ "$FORGEJO_STATUS" == 201 ]] || forgejo_fail "cannot create the team $name of $owner"
@@ -485,114 +542,220 @@ forgejo_team() {
     forgejo_api PATCH "/teams/$team" "$body"
     [[ "$FORGEJO_STATUS" == 200 ]] || forgejo_fail "cannot update the team $name of $owner"
   fi
-  forgejo_api PUT "/teams/$team/members/$FORGEJO_BOT"
-  [[ "$FORGEJO_STATUS" == 204 ]] || forgejo_fail "cannot add $FORGEJO_BOT to the team $name"
-  for repo in "$@"; do
-    forgejo_api PUT "/teams/$team/repos/$owner/$repo"
-    [[ "$FORGEJO_STATUS" == 204 ]] || forgejo_fail "cannot give the team $name $permission access to $owner/$repo"
+  if [[ -n "$member" ]]; then
+    forgejo_api PUT "/teams/$team/members/$member"
+    [[ "$FORGEJO_STATUS" == 204 ]] || forgejo_fail "cannot add $member to the team $name"
+    list="$(forgejo_list "/teams/$team/members")" || exit 1
+    for m in $(jq -r '.[].login' <<<"$list"); do
+      [[ "$m" != "$member" ]] || continue
+      forgejo_api DELETE "/teams/$team/members/$m"
+      [[ "$FORGEJO_STATUS" == 204 ]] || forgejo_fail "cannot remove $m from the team $name"
+      echo "team $name: $m removed (its only member is $member)"
+    done
+  fi
+  $all && return 0
+  for r in "$@"; do
+    forgejo_api PUT "/teams/$team/repos/$owner/$r"
+    [[ "$FORGEJO_STATUS" == 204 ]] || forgejo_fail "cannot give the team $name $permission access to $owner/$r"
+  done
+  list="$(forgejo_list "/teams/$team/repos")" || exit 1
+  for r in $(jq -r '.[].name' <<<"$list"); do
+    one_of "$r" "$@" && continue
+    forgejo_api DELETE "/teams/$team/repos/$owner/$r"
+    [[ "$FORGEJO_STATUS" == 204 ]] || forgejo_fail "cannot remove $owner/$r from the team $name"
+    echo "team $name: $owner/$r removed"
   done
 }
 
-# forgejo_bot OWNER CREATE REPOSITORY...: the account the console and the CI write to
-# the repositories of the topology with, never the admin: user FORGEJO_BOT, not an
-# admin, member of the team FORGEJO_BOT of the organization OWNER, which writes to
-# REPOSITORY... only (the sources, the console's, and the output, the CI's: the
-# output's main takes the pushes of this account only, forgejo_protect_branch) and,
-# with CREATE=true (split), may create repositories (the console's project
-# repositories, of which the user is then the admin), and of its team
-# FORGEJO_BOT_READ_TEAM, which reads the catalogs of OWNER copied to Forgejo
-# (FORGEJO_CATALOG_REPOS, forgejo_push_catalogs first): the repositories are
-# private, the CI's compile and the console fetch the catalogs with its credentials.
-# Its password is the one of the console's Secret (gitops.credentialsSecret of
-# okdp-system/okdp-control-plane-server) when it is there, else a new random one: set
-# on the account, then written, with the user name, to that Secret, in its namespace
-# only. The CI has no password of it: a token, in the output repository's Actions
-# secret (forgejo_ci_token).
-forgejo_bot() {
-  local owner="$1" create="$2" console_ns console_secret c catalogs=()
-  shift 2
-  console_ns="$SERVER_NAMESPACE"
-  console_secret="$(yq '.gitops.credentialsSecret' "$SERVER_VALUES")"
+# forgejo_delete_team OWNER NAME: the team NAME of OWNER deleted, if it exists.
+forgejo_delete_team() {
+  local list team
+  list="$(forgejo_list "/orgs/$1/teams")" || exit 1
+  team="$(jq -r --arg n "$2" '.[] | select(.name == $n) | .id' <<<"$list")"
+  [[ -n "$team" ]] || return 0
+  forgejo_api DELETE "/teams/$team"
+  [[ "$FORGEJO_STATUS" == 204 ]] || forgejo_fail "cannot delete the team $2 of $1"
+  echo "team $2 of $1: deleted"
+}
+
+# forgejo_delete_user NAME: the account NAME deleted, if it exists, with its tokens,
+# its memberships and its collaborations (purge), unless it owns repositories (it
+# never should: the repositories are the organization's).
+forgejo_delete_user() {
+  forgejo_api GET "/users/$1"
+  [[ "$FORGEJO_STATUS" == 200 ]] || return 0
+  forgejo_api GET "/users/$1/repos?limit=1"
+  [[ "$FORGEJO_STATUS" == 200 ]] || forgejo_fail "cannot list the repositories of $1"
+  [[ "$(jq 'length' "$FORGEJO_BODY")" == 0 ]] \
+    || die "the user $1 owns repositories: move them to the organization, then run again"
+  forgejo_api DELETE "/admin/users/$1?purge=true"
+  [[ "$FORGEJO_STATUS" == 204 ]] || forgejo_fail "cannot delete the user $1"
+  echo "user $1: deleted, with its tokens and memberships"
+}
+
+# forgejo_console_enabled: the layout installs the control plane (the instance
+# okdp-control-plane-server, whose values are SERVER_VALUES): the console account
+# exists then only.
+forgejo_console_enabled() { [[ -f "$(dirname "$SERVER_VALUES")/instance.yaml" ]]; }
+
+# forgejo_legacy_cleanup OWNER: an older sandbox's single account FORGEJO_LEGACY_BOT
+# (the console's, by password, the CI's and the engines' at once) deleted with its
+# tokens and memberships (forgejo_delete_user), its teams FORGEJO_LEGACY_TEAMS of
+# OWNER, the admin's former token of the server, and the Secrets of its credentials:
+# the runner's copy and the console's former Secret (FORGEJO_LEGACY_CONSOLE_SECRET).
+forgejo_legacy_cleanup() {
+  local owner="$1" t
+  if $DRY_RUN; then
+    dry "user $FORGEJO_LEGACY_BOT of an older sandbox (the console, the CI and the engines at once): deleted with its tokens and memberships, its teams ${FORGEJO_LEGACY_TEAMS[*]} of $owner too"
+    return
+  fi
+  forgejo_delete_user "$FORGEJO_LEGACY_BOT"
+  for t in "${FORGEJO_LEGACY_TEAMS[@]}"; do forgejo_delete_team "$owner" "$t"; done
+  forgejo_api DELETE "/users/$FORGEJO_USER/tokens/okdp-control-plane-server"
+  [[ "$FORGEJO_STATUS" == 204 || "$FORGEJO_STATUS" == 404 ]] \
+    || forgejo_fail "cannot delete the token okdp-control-plane-server of $FORGEJO_USER"
+  kubectl -n "$RUNNER_NAMESPACE" delete secret "$FORGEJO_LEGACY_CONSOLE_SECRET" --ignore-not-found >/dev/null
+  if [[ "$(yq '.gitops.credentialsSecret // ""' "$SERVER_VALUES")" != "$FORGEJO_LEGACY_CONSOLE_SECRET" ]]; then
+    kubectl -n "$SERVER_NAMESPACE" delete secret "$FORGEJO_LEGACY_CONSOLE_SECRET" --ignore-not-found >/dev/null
+  fi
+}
+
+# forgejo_accounts OWNER CREATE OUTPUT SOURCE...: the accounts of the topology
+# (forgejo_user), each the only member of its teams of OWNER (forgejo_team), an older
+# sandbox's single account removed first (forgejo_legacy_cleanup):
+#   FORGEJO_CI       team okdp-ci: write, OUTPUT only; team okdp-ci-read: read, the
+#                    SOURCEs and the catalogs of OWNER copied to Forgejo
+#                    (FORGEJO_CATALOG_REPOS, forgejo_push_catalogs first), or, with
+#                    CREATE=true (split), every repository of OWNER: the repository
+#                    the console creates for a new project is read at the next run.
+#   FORGEJO_READER   team okdp-reader: read, OUTPUT only.
+#   FORGEJO_CONSOLE  (forgejo_console_enabled) team okdp-console: write, the SOURCEs,
+#                    and, with CREATE=true, may create repositories (a new project's:
+#                    the console is then their admin); team okdp-console-read: read,
+#                    OUTPUT (the compiled tree the console shows) and the catalogs.
+#                    Never a writer of OUTPUT. Without the control plane, the account
+#                    and its teams are deleted, and its Secrets (the server's values'
+#                    gitops.credentialsSecret and gitops.forgejoTokenSecret).
+# None writes the platform's and the projects' repositories but the console; people
+# get their teams from their Keycloak groups.
+forgejo_accounts() {
+  local owner="$1" create="$2" output="$3" c catalogs=() read=() secret
+  shift 3
   for c in "${FORGEJO_CATALOG_REPOS[@]}"; do
     if [[ "${c%%/*}" == "$owner" ]]; then
       catalogs+=("${c#*/}")
     else
-      echo "catalog $c: not of the organization $owner, the bot gets no read access to it" >&2
+      echo "catalog $c: not of the organization $owner, the CI and the console get no read access to it" >&2
     fi
   done
-  if $DRY_RUN; then
-    dry "user $FORGEJO_BOT (not an admin): created if missing, its password set"
-    dry "team $FORGEJO_BOT of $owner: member $FORGEJO_BOT, writes to $*$($create && echo ', may create repositories')"
-    dry "team $FORGEJO_BOT_READ_TEAM of $owner: member $FORGEJO_BOT, reads ${catalogs[*]}"
-    dry "Secret $console_ns/$console_secret: the user name and password of $FORGEJO_BOT"
-    return
+  forgejo_legacy_cleanup "$owner"
+  if $create; then read=("*"); else read=("$@" "${catalogs[@]}"); fi
+  forgejo_user "$FORGEJO_CI" "the CI of $owner/$output, its only pusher"
+  forgejo_team "$owner" "$FORGEJO_CI" write false \
+    "The CI: writes the output repository, the only pusher of its main" "$FORGEJO_CI" "$output"
+  forgejo_team "$owner" "$FORGEJO_CI-read" read false \
+    "The CI: reads the sources and the service catalogs" "$FORGEJO_CI" "${read[@]}"
+  forgejo_user "$FORGEJO_READER" "Argo CD and Flux, readers of $owner/$output"
+  forgejo_team "$owner" "$FORGEJO_READER" read false \
+    "Argo CD and Flux: read the output repository" "$FORGEJO_READER" "$output"
+  if forgejo_console_enabled; then
+    forgejo_user "$FORGEJO_CONSOLE" "the control plane, a writer of the sources"
+    forgejo_team "$owner" "$FORGEJO_CONSOLE" write "$create" \
+      "The control plane: writes the sources, never the output" "$FORGEJO_CONSOLE" "$@"
+    forgejo_team "$owner" "$FORGEJO_CONSOLE-read" read false \
+      "The control plane: reads the output repository and the service catalogs" "$FORGEJO_CONSOLE" "$output" "${catalogs[@]}"
+  elif $DRY_RUN; then
+    dry "no control plane in the layout: user $FORGEJO_CONSOLE, its teams and its Secrets deleted"
+  else
+    forgejo_delete_user "$FORGEJO_CONSOLE"
+    forgejo_delete_team "$owner" "$FORGEJO_CONSOLE"
+    forgejo_delete_team "$owner" "$FORGEJO_CONSOLE-read"
+    for secret in "$(yq '.gitops.credentialsSecret // ""' "$SERVER_VALUES")" \
+      "$(yq '.gitops.forgejoTokenSecret // ""' "$SERVER_VALUES")"; do
+      [[ -z "$secret" ]] || kubectl -n "$SERVER_NAMESPACE" delete secret "$secret" --ignore-not-found >/dev/null
+    done
   fi
-  if ! FORGEJO_BOT_PASSWORD="$(secret_value "$console_ns" "$console_secret" password)" \
-    || [[ -z "$FORGEJO_BOT_PASSWORD" ]]; then
-    FORGEJO_BOT_PASSWORD="$(random_hex 24)"
-  fi
-  forgejo_api GET "/users/$FORGEJO_BOT"
-  case "$FORGEJO_STATUS" in
-    404)
-      forgejo_api POST /admin/users "$(jq -cn --arg u "$FORGEJO_BOT" --arg p "$FORGEJO_BOT_PASSWORD" \
-        '{username: $u, email: ($u + "@okdp.io"), password: $p, must_change_password: false, visibility: "private"}')"
-      [[ "$FORGEJO_STATUS" == 201 ]] || forgejo_fail "cannot create the user $FORGEJO_BOT"
-      echo "user $FORGEJO_BOT: created"
-      ;;
-    200)
-      forgejo_api PATCH "/admin/users/$FORGEJO_BOT" "$(jq -cn --arg u "$FORGEJO_BOT" --arg p "$FORGEJO_BOT_PASSWORD" \
-        '{login_name: $u, source_id: 0, password: $p, must_change_password: false, admin: false}')"
-      [[ "$FORGEJO_STATUS" == 200 ]] || forgejo_fail "cannot update the user $FORGEJO_BOT"
-      ;;
-    *) forgejo_fail "user $FORGEJO_BOT" ;;
-  esac
-  forgejo_team "$owner" "$FORGEJO_BOT" write "$create" \
-    "The console and the CI: write to the deployments repositories" "$@"
-  forgejo_team "$owner" "$FORGEJO_BOT_READ_TEAM" read false \
-    "The console and the CI: read the service catalogs" "${catalogs[@]}"
-  secret_write "$console_ns" "$console_secret" "username=$FORGEJO_BOT" "password=$FORGEJO_BOT_PASSWORD"
-  # The runner's copy of an older sandbox (the CI's credentials before its token).
-  kubectl -n "$RUNNER_NAMESPACE" delete secret okdp-gitops-bot --ignore-not-found >/dev/null
-  echo "user $FORGEJO_BOT: writes to $*, reads ${catalogs[*]} of $owner, in Secret $console_ns/$console_secret"
 }
 
-# forgejo_token_secret NAMESPACE SECRET: a new access token of FORGEJO_BOT
-# (forgejo_bot first) for the control plane server (it creates the project
-# repositories of the split topology), in Secret NAMESPACE/SECRET, key token (the
-# namespace created if missing). The previous token of that name is deleted, the
-# admin's too (the server's token before FORGEJO_BOT).
-forgejo_token_secret() {
-  local name=okdp-control-plane-server token
+# forgejo_ci_token OWNER OUTPUT_REPO SOURCE_REPO...: the token of the CI, the only
+# one: an access token of FORGEJO_CI (forgejo_accounts first; write:repository),
+# replaced at each push, in the Actions secret OKDP_GITOPS_TOKEN of the output
+# repository only, whose workflow reads the sources and writes the output with it,
+# and FORGEJO_CI_TOKEN, with which this run pushes the output (forgejo_push_tree
+# --as-ci). Whoever can push a workflow to a repository can read its secrets: the
+# repositories of the sources, which every writer of the tree pushes to, hold none;
+# an older sandbox's secrets there (OKDP_GITOPS_TOKEN, OKDP_DISPATCH_TOKEN) are
+# deleted.
+forgejo_ci_token() {
+  local owner="$1" output="$2" repo secret
+  shift 2
   if $DRY_RUN; then
-    dry "access token $name of $FORGEJO_BOT (write:organization, write:repository, read:user), replacing the previous one"
-    dry "Secret $1/$2 (key token), namespace $1 created if missing"
+    dry "access token okdp-ci of $FORGEJO_CI (write:repository) -> Actions secret OKDP_GITOPS_TOKEN of $owner/$output"
+    dry "Actions secrets OKDP_GITOPS_TOKEN and OKDP_DISPATCH_TOKEN of ${*/#/$owner/}: deleted"
     return
   fi
-  forgejo_api DELETE "/users/$FORGEJO_USER/tokens/$name"
-  [[ "$FORGEJO_STATUS" == 204 || "$FORGEJO_STATUS" == 404 ]] || forgejo_fail "cannot delete the token $name of $FORGEJO_USER"
-  forgejo_api_as "$FORGEJO_BOT" "$FORGEJO_BOT_PASSWORD" DELETE "/users/$FORGEJO_BOT/tokens/$name"
-  [[ "$FORGEJO_STATUS" == 204 || "$FORGEJO_STATUS" == 404 ]] || forgejo_fail "cannot delete the token $name"
-  forgejo_api_as "$FORGEJO_BOT" "$FORGEJO_BOT_PASSWORD" POST "/users/$FORGEJO_BOT/tokens" "$(jq -cn --arg n "$name" \
-    '{name: $n, scopes: ["write:organization", "write:repository", "read:user"]}')"
-  [[ "$FORGEJO_STATUS" == 201 ]] || forgejo_fail "cannot create the token $name"
-  token="$(jq -r '.sha1' "$FORGEJO_BODY")"
-  rm -f "$FORGEJO_BODY"
-  secret_write "$1" "$2" "token=$token"
-  echo "Secret $1/$2: the access token $name of $FORGEJO_BOT"
+  forgejo_token "$FORGEJO_CI" okdp-ci write:repository
+  FORGEJO_CI_TOKEN="$FORGEJO_TOKEN"
+  forgejo_api PUT "/repos/$owner/$output/actions/secrets/OKDP_GITOPS_TOKEN" "$(jq -cn --arg t "$FORGEJO_CI_TOKEN" '{data: $t}')"
+  [[ "$FORGEJO_STATUS" == 201 || "$FORGEJO_STATUS" == 204 ]] \
+    || forgejo_fail "cannot write the Actions secret OKDP_GITOPS_TOKEN of $owner/$output"
+  echo "Actions secret OKDP_GITOPS_TOKEN of $owner/$output: the access token okdp-ci of $FORGEJO_CI"
+  # An older sandbox's: the token in the sources, the dispatch token.
+  for repo in "$@"; do
+    for secret in OKDP_GITOPS_TOKEN OKDP_DISPATCH_TOKEN; do
+      forgejo_api DELETE "/repos/$owner/$repo/actions/secrets/$secret"
+      [[ "$FORGEJO_STATUS" == 204 || "$FORGEJO_STATUS" == 404 ]] \
+        || forgejo_fail "cannot delete the Actions secret $secret of $owner/$repo"
+    done
+  done
+  echo "repositories of the sources ${*/#/$owner/}: no Actions secret"
+}
+
+# forgejo_console_secrets SPLIT: the console's credentials (forgejo_console_enabled;
+# forgejo_accounts first), in the server's namespace only, never a password: an
+# access token okdp-console-git of FORGEJO_CONSOLE (write:repository), the password
+# of the user FORGEJO_CONSOLE in the Secret gitops.credentialsSecret of the server's
+# values (keys username, password: the server's git credentials, a token as
+# password); with SPLIT=true, an access token okdp-console-api (write:organization,
+# write:repository: it creates the repository of a new project) in the Secret
+# gitops.forgejoTokenSecret (key token).
+forgejo_console_secrets() {
+  local creds api
+  forgejo_console_enabled || return 0
+  creds="$(yq '.gitops.credentialsSecret // ""' "$SERVER_VALUES")"
+  api="$(yq '.gitops.forgejoTokenSecret // ""' "$SERVER_VALUES")"
+  [[ -n "$creds" ]] || die "no gitops.credentialsSecret in ${SERVER_VALUES#"$ROOT"/}: the Secret of the console's Forgejo token"
+  if $DRY_RUN; then
+    dry "access token okdp-console-git of $FORGEJO_CONSOLE (write:repository) -> Secret $SERVER_NAMESPACE/$creds (username, password)"
+    if $1; then dry "access token okdp-console-api of $FORGEJO_CONSOLE (write:organization, write:repository) -> Secret $SERVER_NAMESPACE/$api (token)"; fi
+    return
+  fi
+  forgejo_token "$FORGEJO_CONSOLE" okdp-console-git write:repository
+  secret_write "$SERVER_NAMESPACE" "$creds" "username=$FORGEJO_CONSOLE" "password=$FORGEJO_TOKEN"
+  echo "Secret $SERVER_NAMESPACE/$creds: the access token okdp-console-git of $FORGEJO_CONSOLE"
+  if $1; then
+    [[ -n "$api" ]] || die "no gitops.forgejoTokenSecret in ${SERVER_VALUES#"$ROOT"/} (split: scripts/configure.sh --topology split)"
+    forgejo_token "$FORGEJO_CONSOLE" okdp-console-api write:organization write:repository
+    secret_write "$SERVER_NAMESPACE" "$api" "token=$FORGEJO_TOKEN"
+    echo "Secret $SERVER_NAMESPACE/$api: the access token okdp-console-api of $FORGEJO_CONSOLE"
+  else
+    [[ -z "$api" ]] || kubectl -n "$SERVER_NAMESPACE" delete secret "$api" --ignore-not-found >/dev/null
+  fi
 }
 
 # forgejo_protect_branch OWNER REPO BRANCH: branch protection on BRANCH of the output
-# repository: the push whitelist is FORGEJO_BOT alone (the CI's token, its account:
-# forgejo_bot first, Forgejo keeps on the whitelist the users that write to the
-# repository only), no force push, no deletion. Nobody else pushes there, the admin
-# and the console included: a writer of the output deploys anything, past every
-# check of the compile.
+# repository: the push whitelist is FORGEJO_CI alone (the CI's token, its account:
+# forgejo_accounts first, Forgejo keeps on the whitelist the users that write to the
+# repository only), applied to the administrators too (the admin, the organization's
+# owners: the platform admins), no force push (Forgejo refuses one on a protected
+# branch), no deletion. Nobody else pushes there, the admin and the console included:
+# a writer of the output deploys anything, past every check of the compile.
 forgejo_protect_branch() {
   local body
-  if $DRY_RUN; then dry "branch protection on $1/$2 $3: push whitelist $FORGEJO_BOT, no force push"; return; fi
-  body="$(jq -cn --arg b "$3" --arg u "$FORGEJO_BOT" '{branch_name: $b, rule_name: $b,
+  if $DRY_RUN; then dry "branch protection on $1/$2 $3: push whitelist $FORGEJO_CI, the administrators included, no force push"; return; fi
+  body="$(jq -cn --arg b "$3" --arg u "$FORGEJO_CI" '{branch_name: $b, rule_name: $b,
     enable_push: true, enable_push_whitelist: true, push_whitelist_usernames: [$u],
-    push_whitelist_teams: [], push_whitelist_deploy_keys: false, enable_force_push: false,
+    push_whitelist_teams: [], push_whitelist_deploy_keys: false, apply_to_admins: true,
     enable_status_check: false, block_on_rejected_reviews: false}')"
   forgejo_api POST "/repos/$1/$2/branch_protections" "$body"
   case "$FORGEJO_STATUS" in
@@ -603,30 +766,132 @@ forgejo_protect_branch() {
       echo "branch protection on $1/$2 $3: updated" ;;
     *) forgejo_fail "cannot create branch protection on $1/$2 $3" ;;
   esac
-  [[ "$(jq -c --arg u "$FORGEJO_BOT" '[.enable_push, .enable_push_whitelist, .push_whitelist_usernames == [$u]]' "$FORGEJO_BODY")" == '[true,true,true]' ]] \
-    || die "branch protection on $1/$2 $3: the push whitelist is not $FORGEJO_BOT alone ($(jq -c '.push_whitelist_usernames' "$FORGEJO_BODY"))"
+  [[ "$(jq -c --arg u "$FORGEJO_CI" '[.enable_push, .enable_push_whitelist, .push_whitelist_usernames == [$u], .apply_to_admins]' "$FORGEJO_BODY")" == '[true,true,true,true]' ]] \
+    || die "branch protection on $1/$2 $3: the push whitelist is not $FORGEJO_CI alone, or the administrators are exempt ($(jq -c '[.push_whitelist_usernames, .apply_to_admins]' "$FORGEJO_BODY"))"
 }
 
-# forgejo_engine_secrets OWNER [NAMESPACE SECRET]...: a read-only access token of
-# FORGEJO_BOT for the engines (Argo CD, Flux) to pull private repositories, written
-# to each NAMESPACE/SECRET (keys username, password). The previous token of that
-# name is deleted.
+# forgejo_engine_secrets [NAMESPACE SECRET]...: the engines' (Argo CD, Flux) access
+# token okdp-engines of FORGEJO_READER (forgejo_accounts first; read:repository), who
+# reads the output repository only, written to each NAMESPACE/SECRET (keys username,
+# password).
 forgejo_engine_secrets() {
-  local owner="$1" name=okdp-engine-reader token; shift
   if $DRY_RUN; then
-    while [[ $# -ge 2 ]]; do dry "Secret $1/$2: read token of $FORGEJO_BOT"; shift 2; done
+    while [[ $# -ge 2 ]]; do dry "Secret $1/$2: the access token okdp-engines of $FORGEJO_READER (read:repository)"; shift 2; done
     return
   fi
-  forgejo_api_as "$FORGEJO_BOT" "$FORGEJO_BOT_PASSWORD" DELETE "/users/$FORGEJO_BOT/tokens/$name"
-  [[ "$FORGEJO_STATUS" == 204 || "$FORGEJO_STATUS" == 404 ]] || forgejo_fail "cannot delete the token $name"
-  forgejo_api_as "$FORGEJO_BOT" "$FORGEJO_BOT_PASSWORD" POST "/users/$FORGEJO_BOT/tokens" "$(jq -cn --arg n "$name" \
-    '{name: $n, scopes: ["read:repository"]}')"
-  [[ "$FORGEJO_STATUS" == 201 ]] || forgejo_fail "cannot create the token $name"
-  token="$(jq -r '.sha1' "$FORGEJO_BODY")"
-  rm -f "$FORGEJO_BODY"
+  forgejo_token "$FORGEJO_READER" okdp-engines read:repository
   while [[ $# -ge 2 ]]; do
-    secret_write "$1" "$2" "username=$FORGEJO_BOT" "password=$token"
-    echo "Secret $1/$2: the access token $name of $FORGEJO_BOT (read:repository)"
+    secret_write "$1" "$2" "username=$FORGEJO_READER" "password=$FORGEJO_TOKEN"
+    echo "Secret $1/$2: the access token okdp-engines of $FORGEJO_READER (read:repository)"
     shift 2
   done
+}
+
+# ------------------------------------------------------------------- people
+# People sign in with Keycloak (the OAuth source keycloak, forgejo_sign_in): their
+# Keycloak groups (the groups claim) give their teams, Forgejo keeping their
+# membership at each sign-in (--group-team-map, --group-team-map-removal). The groups
+# and their roles are the platform's (global.okdp.access.admins of platform.yaml)
+# and each project's (its project.yaml access), read from what the compile wrote,
+# never decided here: the AppProject project-<p> of the compiled tree, its roles'
+# groups.
+
+# FORGEJO_GROUP_TEAMS: group -> the teams of OWNER its members join (space separated),
+# filled by forgejo_people_teams.
+declare -A FORGEJO_GROUP_TEAMS=()
+forgejo_group_team() { FORGEJO_GROUP_TEAMS[$1]="${FORGEJO_GROUP_TEAMS[$1]:+${FORGEJO_GROUP_TEAMS[$1]} }$2"; }
+
+# forgejo_admin_groups: the platform's administrators' groups, one per line
+# (global.okdp.access.admins of platform.yaml).
+forgejo_admin_groups() { yq -r '.global.okdp.access.admins[]?' "$ROOT/platform.yaml"; }
+
+# forgejo_people_teams OWNER TOPOLOGY OUT: the teams of the people of OWNER, from the
+# compiled tree OUT (layout_compile): the platform's administrators join Owners, the
+# organization's owners; for each compiled project <p>, the groups of the roles
+# editor and admin of its AppProject (OUT/compiled/projects/<p>/project/appproject.yaml)
+# join the team okdp-project-<p>, which writes its repository (split
+# okdp-project-<p>; io okdp-projects, every project's), those of viewer the team
+# okdp-project-<p>-viewers, which reads it; never the platform's repository nor the
+# output. A team okdp-project-* of no compiled project (a project removed, or
+# without a role of that kind) is deleted. The members are Forgejo's to keep, from
+# the groups claim (forgejo_sign_in): no member is set here.
+forgejo_people_teams() {
+  local owner="$1" topology="$2" out="$3" f p repo g list t keep=()
+  for g in $(forgejo_admin_groups); do forgejo_group_team "$g" Owners; done
+  for f in "$out"/compiled/projects/*/project/appproject.yaml; do
+    [[ -f "$f" ]] || continue
+    p="$(basename "$(dirname "$(dirname "$f")")")"
+    case "$topology" in
+      io) repo="$PROJECTS_REPO" ;;
+      split) repo="$PROJECT_REPO_PREFIX$p" ;;
+      *) die "forgejo_people_teams: topology $topology" ;;
+    esac
+    for t in write:editor,admin read:viewer; do
+      local team="okdp-project-$p" permission="${t%%:*}" roles="${t#*:}" groups
+      [[ "$permission" == write ]] || team="$team-viewers"
+      # shellcheck disable=SC2016 # a yq variable
+      groups="$(R="$roles" yq -r '.spec.roles[]? | select(.name as $n | strenv(R) | split(",") | any_c(. == $n)) | .groups[]?' "$f" | sort -u)"
+      [[ -n "$groups" ]] || continue
+      forgejo_team "$owner" "$team" "$permission" false \
+        "The people of the project $p ($roles of its project.yaml access): $permission $owner/$repo" "" "$repo"
+      keep+=("$team")
+      for g in $groups; do forgejo_group_team "$g" "$team"; done
+    done
+  done
+  if $DRY_RUN; then dry "teams okdp-project-* of $owner but ${keep[*]:-none}: deleted"; return; fi
+  list="$(forgejo_list "/orgs/$owner/teams")" || exit 1
+  for t in $(jq -r '.[].name | select(startswith("okdp-project-"))' <<<"$list"); do
+    one_of "$t" "${keep[@]}" || forgejo_delete_team "$owner" "$t"
+  done
+}
+
+# forgejo_group_team_map OWNER: the --group-team-map of the OAuth source,
+# {"<group>": {"OWNER": ["<team>", ...]}, ...} (forgejo_people_teams first).
+forgejo_group_team_map() {
+  local g
+  for g in "${!FORGEJO_GROUP_TEAMS[@]}"; do
+    # Word splitting of the team list is intended.
+    # shellcheck disable=SC2086
+    jq -cn --arg g "$g" --arg o "$1" '{($g): {($o): $ARGS.positional}}' --args ${FORGEJO_GROUP_TEAMS[$g]}
+  done | jq -cs 'add // {} | to_entries | sort_by(.key) | from_entries'
+}
+
+# forgejo_sign_in OWNER ADD: the OAuth source keycloak of Forgejo, the sign-in with
+# the realm's client forgejo (sandbox-charts' bootstrap/keycloak/realm.yaml), its
+# issuer global.okdp.oidc.issuerUri of platform.yaml, created (ADD=true) or updated
+# (when it exists; else nothing, ADD=false), in Forgejo's database through its CLI in
+# its pod: the admin group the platform's first administrators' group (Forgejo's
+# administrators), the group-team map of forgejo_group_team_map, membership removed
+# when the group is (--group-team-map-removal). The client's secret, of Secret
+# keycloak/keycloak-client-secrets (the bootstrap's), reaches the pod on its standard
+# input. Forgejo needs Keycloak reachable and its CA trusted (README, after step 5).
+forgejo_sign_in() {
+  local owner="$1" add="$2" issuer admin map id secret args
+  issuer="$(yq -r '.global.okdp.oidc.issuerUri // ""' "$ROOT/platform.yaml")"
+  [[ -n "$issuer" ]] || die "platform.yaml: no global.okdp.oidc.issuerUri, the issuer Forgejo signs in with"
+  admin="$(forgejo_admin_groups | head -n 1)"
+  [[ -n "$admin" ]] || die "platform.yaml: no global.okdp.access.admins, the platform's administrators"
+  map="$(forgejo_group_team_map "$owner")"
+  args=(--name keycloak --provider openidConnect --key forgejo
+    --auto-discover-url "${issuer%/}/.well-known/openid-configuration"
+    --group-claim-name groups --admin-group "$admin"
+    --group-team-map "$map" --group-team-map-removal)
+  if $DRY_RUN; then
+    dry "OAuth source keycloak of Forgejo ($($add && echo 'created or updated' || echo 'updated if it exists')): $issuer, admin group $admin, group-team map $map"
+    return
+  fi
+  id="$(kubectl -n "$FORGEJO_NAMESPACE" exec "deploy/$FORGEJO_DEPLOYMENT" -c forgejo -- forgejo admin auth list \
+    | awk '$2 == "keycloak" {print $1}')"
+  if [[ -z "$id" ]] && ! $add; then
+    echo "OAuth source keycloak: none yet (scripts/configure.sh --push --sign-in once the platform is up)"
+    return
+  fi
+  secret="$(secret_value keycloak keycloak-client-secrets forgejo)" && [[ -n "$secret" ]] \
+    || die "no secret of the client forgejo in Secret keycloak/keycloak-client-secrets (the bootstrap's)"
+  if [[ -n "$id" ]]; then args=(update-oauth --id "$id" "${args[@]}"); else args=(add-oauth "${args[@]}"); fi
+  # shellcheck disable=SC2016 # expanded by the pod's shell
+  printf '%s\n' "$secret" | kubectl -n "$FORGEJO_NAMESPACE" exec -i "deploy/$FORGEJO_DEPLOYMENT" -c forgejo -- \
+    sh -c 'read -r secret && exec forgejo admin auth "$@" --secret "$secret"' sh "${args[@]}" >/dev/null \
+    || die "cannot $( [[ -n "$id" ]] && echo update || echo create ) the OAuth source keycloak of Forgejo"
+  echo "OAuth source keycloak: $( [[ -n "$id" ]] && echo updated || echo created ), $issuer, admin group $admin, group-team map $map"
 }

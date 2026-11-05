@@ -33,13 +33,36 @@
 # project okdp, which would replace this one and prune every Application it applies.
 # The platform's own objects of the engines' namespaces (argocd, flux-system,
 # okdp-releases) all take a name no release can: a dot, or no dash (okdp).
+# Its AppProject, okdp.instances, lets it write Applications in argocd and nothing
+# else: no other kind, no other namespace, no cluster-scoped object, the output
+# repository its only source. What each instance deploys is the AppProject its
+# Application names, project-<project>, never this one's (Argo CD does not let an
+# AppProject choose the projects of the Applications it writes: the compiler
+# writes project-<project> in each, and okdp-ci alone writes the output).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: okdp.instances
+  namespace: argocd
+spec:
+  description: The app of apps of the instances, Applications in argocd only.
+  sourceRepos:
+    - http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: argoproj.io
+      kind: Application
+---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: okdp.instances
   namespace: argocd
 spec:
-  project: okdp
+  project: okdp.instances
   source:
     repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
     targetRevision: main

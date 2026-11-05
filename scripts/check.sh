@@ -25,7 +25,10 @@
 #   2. the sandbox's files agree with its scripts: the control plane server names the
 #      sandbox's io or split topology (gitops.topology; no single repository, mono is
 #      gone; io warned of: every writer of the projects repository writes every
-#      project); flux/ and argocd/ read the output repository of the topology; the
+#      project); flux/ and argocd/ read the output repository of the topology (the
+#      AppProjects too; the app of apps of the instances writes Applications in
+#      argocd only, its AppProject okdp.instances; Argo CD's admins are the
+#      administrators' groups of platform.yaml, no default role); the
 #      CI's workflow is written (okdp-gitops workflow --for output, which refuses an
 #      http:// host not in CI_INSECURE_HTTP_HOSTS); projects.yaml lists the projects
 #      of projects/ (split); a project of projects/ has a project.yaml (the scripts'
@@ -79,7 +82,7 @@ while [[ $# -gt 0 ]]; do
     --catalog) CATALOGS+=("$2"); shift 2 ;;
     --charts) CHARTS="$(mkdir -p "$2" && cd "$2" && pwd)"; shift 2 ;;
     --helm) HELM=true; shift ;;
-    -h|--help) sed -n '18,62p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,65p' "$0"; exit 0 ;;
     *) echo "check: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -145,6 +148,26 @@ fi
   || fail "flux/sync.yaml: the path starts with $(entry_prefix), the output is at the root of its repository (./compiled/projects)"
 [[ "$(yq 'select(.kind == "Application") | .spec.source.repoURL' "$ROOT/argocd/root.yaml")" == "$(output_url "$topology")" ]] \
   || fail "argocd/root.yaml: its source is not the output repository (okdp-gitops writes the Applications of the instances from it)"
+# The AppProjects of the entry point read the output repository only; the app of
+# apps of the instances writes Applications in argocd and nothing else.
+for f in "$ROOT"/argocd/*.yaml; do
+  [[ "$(U="$(output_url "$topology")" yq 'select(.kind == "AppProject") | .spec.sourceRepos[] | select(. != strenv(U))' "$f")" == "" ]] \
+    || fail "argocd/${f##*/}: an AppProject reads another repository than the output repository"
+done
+[[ "$(yq -o=json -I=0 'select(.kind == "Application" and .metadata.name == "okdp.instances") | .spec.project' "$ROOT/argocd/instances.yaml")" == '"okdp.instances"' \
+  && "$(yq 'select(.kind == "AppProject" and .metadata.name == "okdp.instances")' "$ROOT/argocd/instances.yaml" \
+    | yq -o=json -I=0 '[.spec.destinations, (.spec.clusterResourceWhitelist // []), .spec.namespaceResourceWhitelist]')" \
+    == '[[{"server":"https://kubernetes.default.svc","namespace":"argocd"}],[],[{"group":"argoproj.io","kind":"Application"}]]' ]] \
+  || fail "argocd/instances.yaml: the Application okdp.instances is not of the AppProject okdp.instances, or that AppProject allows more than Applications in argocd"
+# Argo CD's roles: the platform's administrators (global.okdp.access.admins) admins,
+# no default role for the others (the projects' AppProject roles alone).
+rbac="$ROOT/argocd/bootstrap/argocd-rbac-cm-patch.yaml"
+[[ "$(yq '.data["policy.default"]' "$rbac")" == "" ]] \
+  || fail "${rbac#"$ROOT"/}: policy.default gives every user a role, it must be \"\""
+for g in $(yq -r '.global.okdp.access.admins[]?' "$ROOT/platform.yaml"); do
+  grep -qxF "g, $g, role:admin" <(yq '.data["policy.csv"]' "$rbac") \
+    || fail "${rbac#"$ROOT"/}: no \"g, $g, role:admin\" for the administrators' group $g of platform.yaml (global.okdp.access.admins)"
+done
 # The workflow scripts/configure.sh --push installs in the output repository.
 ci_topology_file "$topology" >"$TMP/topology.ci.yaml"
 if ! forgejo_output_workflow "$TMP/ci" "$TMP/topology.ci.yaml" 2>"$TMP/.workflow.log"; then

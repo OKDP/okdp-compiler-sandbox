@@ -30,8 +30,9 @@
 # project okdp-system (a Secret added to its instance local-secrets-provider) must be
 # compiled into the output by the next scheduled run of the output repository's
 # workflow (the runner forgejo/forgejo-runner, the bootstrap's) and deployed; the
-# repositories of the sources hold no workflow, and the output's main refuses a push
-# of anyone but the bot (the admin's).
+# repositories of the sources hold no workflow, the output's main refuses a push of
+# anyone but okdp-ci, the CI's account (the admin's, the console's, the engines'
+# reader's), and the reader reads the output only.
 #
 # What is pushed is a copy of the layout at E2E_REF, adapted for the test:
 #   - scripts/configure.sh sets the control plane server's gitops.engine to the engine
@@ -71,7 +72,7 @@
 set -euo pipefail
 
 ACTION="${1:-}"; ENGINE="${2:-}"
-[[ "$ACTION" =~ ^(up|push|down)$ && "$ENGINE" =~ ^(argocd|flux)$ ]] || { sed -n '18,69p' "$0"; exit 2; }
+[[ "$ACTION" =~ ^(up|push|down)$ && "$ENGINE" =~ ^(argocd|flux)$ ]] || { sed -n '18,70p' "$0"; exit 2; }
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPTS/../gitops" && pwd)"
@@ -266,33 +267,15 @@ else
   flux get kustomizations
   flux get helmreleases -n okdp-releases
 fi
-# Forgejo's sign-in with Keycloak (README, after step 4): Forgejo reads the sandbox CA
+# Forgejo's sign-in with Keycloak (README, after step 5): Forgejo reads the sandbox CA
 # bundle at startup, and the bundle did not exist when it was bootstrapped; then its OAuth
 # source, added or updated in Forgejo's database (not by the chart, which would need
-# Keycloak at every start), with the secret of the realm's client forgejo (Secret
-# keycloak/keycloak-client-secrets, generated at the bootstrap), given to the pod on
-# its standard input.
-log "restarting Forgejo, then its OAuth source keycloak"
+# Keycloak at every start) by scripts/configure.sh --push --sign-in, with the
+# group-team map of the platform's admins and of the projects' groups.
+log "restarting Forgejo, then its OAuth source keycloak (scripts/configure.sh --push --sign-in)"
 kubectl -n forgejo rollout restart deployment forgejo
 kubectl -n forgejo rollout status deployment forgejo --timeout=5m
-forgejo_auth() { kubectl -n forgejo exec deploy/forgejo -c forgejo -- forgejo admin auth "$@"; }
-# forgejo_oauth ARGS...: forgejo admin auth ARGS --secret <the client's secret>.
-forgejo_oauth() {
-  local secret
-  secret="$(kubectl -n keycloak get secret keycloak-client-secrets -o jsonpath='{.data.forgejo}' | base64 -d)"
-  [[ -n "$secret" ]] || { log "no secret of the client forgejo in Secret keycloak/keycloak-client-secrets"; return 1; }
-  printf '%s\n' "$secret" | kubectl -n forgejo exec -i deploy/forgejo -c forgejo -- \
-    sh -c 'read -r secret && exec forgejo admin auth "$@" --secret "$secret"' sh "$@"
-}
-oauth=(--name keycloak --provider openidConnect --key forgejo
-  --auto-discover-url https://keycloak.okdp.sandbox/realms/master/.well-known/openid-configuration
-  --group-claim-name groups --admin-group platform_admin)
-id="$(forgejo_auth list | awk '$2 == "keycloak" {print $1}')"
-if [[ -n "$id" ]]; then
-  forgejo_oauth update-oauth --id "$id" "${oauth[@]}"
-else
-  forgejo_oauth add-oauth "${oauth[@]}"
-fi
+"$SCRIPTS/configure.sh" --root "$G" --push --force --sign-in
 
 # --------------------------------------------------------- a plain commit deploys
 # The CI (forgejo/forgejo-runner runs the workflow scripts/configure.sh --push put in
@@ -300,9 +283,11 @@ fi
 # by neither the console nor configure.sh, is compiled into the output repository by
 # the next run, then deployed by the engine. The commit adds a Secret to
 # okdp-system/local-secrets-provider; the last commit of the output must be the CI's.
-# Before it, the output's branch protection: a push of the admin to its main is
-# refused (the bot, the CI's account, alone pushes there), and the sources hold no
-# workflow.
+# Before it, the output's branch protection and the accounts: a push to its main of
+# the admin, of the console (its token, Secret gitops.credentialsSecret) and of the
+# engines' reader (Secret argocd/okdp-gitops-reader) is refused (okdp-ci, the CI's
+# account, alone pushes there), the reader cannot read the platform's repository,
+# and the sources hold no workflow.
 ci_check() (
   PROG=e2e
   ROOT="$G"
@@ -310,7 +295,7 @@ ci_check() (
   source "$SCRIPTS/lib/topology.sh"
   # shellcheck source=lib/forgejo.sh
   source "$SCRIPTS/lib/forgejo.sh"
-  local owner repo dir marker output
+  local owner repo dir marker output who user password creds
   work_init
   forgejo_init
   forgejo_connect
@@ -321,12 +306,28 @@ ci_check() (
   esac
   output="$(output_repo "$(topology_current)")"
   forgejo_git clone -q "$(forgejo_repo_url "$owner" "$output")" "$WORK/output"
-  forgejo_git -C "$WORK/output" commit -q --allow-empty -m "e2e: a push of the admin to the output"
-  if forgejo_git -C "$WORK/output" push -q origin HEAD:main 2>/dev/null; then
-    log "the admin pushed to $owner/$output main: its branch protection lets others than the bot push"
+  forgejo_git -C "$WORK/output" commit -q --allow-empty -m "e2e: a push to the output"
+  creds="$(yq '.gitops.credentialsSecret' "$SERVER_VALUES")"
+  for who in "admin" "console $SERVER_NAMESPACE/$creds" "reader argocd/okdp-gitops-reader"; do
+    if [[ "$who" == admin ]]; then
+      user="$FORGEJO_USER"; password="$FORGEJO_PASSWORD"
+    else
+      read -r _ creds <<<"$who"
+      user="$(secret_value "${creds%%/*}" "${creds#*/}" username)"
+      password="$(secret_value "${creds%%/*}" "${creds#*/}" password)"
+    fi
+    if forgejo_git_as "$user" "$password" -C "$WORK/output" push -q "$(forgejo_repo_url "$owner" "$output")" HEAD:main 2>/dev/null; then
+      log "the ${who%% *} ($user) pushed to $owner/$output main: its branch protection lets others than $FORGEJO_CI push"
+      return 1
+    fi
+    log "$owner/$output main refuses the push of the ${who%% *} ($user)"
+  done
+  # The reader reads the output only.
+  if forgejo_git_as "$user" "$password" ls-remote "$(forgejo_repo_url "$owner" "$PLATFORM_REPO")" >/dev/null 2>&1; then
+    log "the reader ($user) reads $owner/$PLATFORM_REPO: it must read the output only"
     return 1
   fi
-  log "$owner/$output main refuses the admin's push"
+  log "the reader ($user) cannot read $owner/$PLATFORM_REPO"
   marker="e2e-$(date +%s)"
   forgejo_git clone -q "$(forgejo_repo_url "$owner" "$repo")" "$WORK/sources"
   if [[ -e "$WORK/sources/.forgejo" ]]; then

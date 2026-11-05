@@ -24,22 +24,26 @@
 # there with the compiled tree (okdp-gitops writes the Applications of the instances
 # because root.yaml is there, from its source); scripts/configure.sh --topology
 # rewrites the URLs.
-# The AppProject of the entry point: root.yaml, instances.yaml, and the Applications
-# of the projects' manifests (projects.yaml), which write the Namespaces, the
-# AppProjects project-<p> in argocd and the SecretStores of the namespaces: every
-# namespace and every cluster-scoped kind, as the platform's administrators, who
-# alone change this directory. The instances of each project use the AppProject
-# project-<p> the compiler writes for it, confined to namespace <p> unless the
-# project is one of the platform's own (global.okdp.policy.privileged).
+# The AppProject of the platform's objects: root.yaml (this directory: the
+# Applications okdp and okdp.instances, the ApplicationSet okdp.projects, the
+# AppProjects okdp and okdp.instances) and the Applications of the projects'
+# manifests (projects.yaml), which write the Namespaces, the AppProjects project-<p>
+# in argocd and the SecretStores of the namespaces: every namespace and every
+# cluster-scoped kind, as the platform's administrators, who alone change this
+# directory; the output repository its only source. The app of apps of the
+# instances is not of this project: its own, okdp.instances (instances.yaml), writes
+# Applications only. The instances of each project use the AppProject project-<p>
+# the compiler writes for it, confined to namespace <p> unless the project is one of
+# the platform's own (global.okdp.policy.privileged).
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
   name: okdp
   namespace: argocd
 spec:
-  description: The Argo CD entry point of OKDP.
+  description: The Argo CD entry point of OKDP, the platform's objects.
   sourceRepos:
-    - "*"
+    - http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
   destinations:
     - server: https://kubernetes.default.svc
       namespace: "*"

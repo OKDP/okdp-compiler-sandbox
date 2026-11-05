@@ -19,10 +19,15 @@
 #   kubectl -n argocd patch configmap argocd-rbac-cm --type merge \
 #     --patch-file gitops/argocd/bootstrap/argocd-rbac-cm-patch.yaml
 # The roles of the users signed in with Keycloak, from the groups claim of their ID
-# token (the realm roles, bootstrap/keycloak): platform_admin (adm, alice) is admin, every
-# other user read-only.
+# token (the groups and the realm roles of the realm okdp, sandbox-charts'
+# bootstrap/keycloak/realm.yaml): the platform's administrators,
+# global.okdp.access.admins of platform.yaml (the group platform_admin: adm, alice),
+# are admins; nobody else has a role but the ones of the projects' AppProjects
+# (project-<p>, roles viewer, editor and admin, its project.yaml access, by default
+# the group okdp-project-<p> editor): no default role, a user of no group sees
+# nothing.
 data:
   policy.csv: |
     g, platform_admin, role:admin
-  policy.default: role:readonly
+  policy.default: ""
   scopes: "[groups]"

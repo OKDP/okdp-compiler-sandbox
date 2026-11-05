@@ -46,27 +46,41 @@
 #   minutes, the topology in it), creates the organization okdp and the repositories
 #   of the topology (private), copies the service catalogs of catalogs.yaml (their
 #   ref, from --catalog, else the checkouts next to this repository, else GitHub),
-#   gives the console and the CI their own Forgejo account, okdp-gitops, not an
-#   admin, with write access to the repositories of the topology only and read
-#   access to the catalogs (its password in the console's Secret, in its namespace;
-#   a token of it in the Actions secret OKDP_GITOPS_TOKEN of the output repository
-#   only, the CI's), turns Actions on in the output repository only, registers the
-#   CI runner (forgejo/forgejo-runner) for the output repository only, never a
-#   repository of the sources nor the organization (its registration secret in its
-#   namespace), protects the output's main (only okdp-gitops pushes there), pushes
-#   each part, the sources (no workflow, no secret) as the admin then the output as
-#   okdp-gitops, as one commit on top of the repository's main (refused when the
-#   console committed there since the last push; --force replaces the console's
-#   changes), and, split, creates an access token of that account for the server,
-#   in the Secret gitops.forgejoTokenSecret of its namespace. It signs in to Forgejo
-#   as its admin, of the Secret gitea.admin.existingSecret of sandbox-charts'
+#   gives each its own Forgejo account, none an admin, through teams of the
+#   repositories it needs only (scripts/lib/forgejo.sh, forgejo_accounts): okdp-ci,
+#   the CI, writes the output and reads the sources and the catalogs, its token
+#   (write:repository) the Actions secret OKDP_GITOPS_TOKEN of the output repository
+#   only; okdp-reader, the engines, reads the output only, its token (read:repository)
+#   in Secrets argocd/okdp-gitops-reader and flux-system/okdp-gitops-reader; when the
+#   layout installs the control plane, okdp-console writes the sources (split: may
+#   create repositories) and reads the output and the catalogs, a token of it
+#   (write:repository) in the server's Secret gitops.credentialsSecret and, split,
+#   another (write:organization) in gitops.forgejoTokenSecret, in its namespace, no
+#   password (an older sandbox's single account okdp-gitops is deleted), turns
+#   Actions on in the output repository only, registers the CI runner
+#   (forgejo/forgejo-runner) for the output repository only, never a repository of
+#   the sources nor the organization (its registration secret in its namespace),
+#   protects the output's main (only okdp-ci pushes there), pushes each part, the
+#   sources (no workflow, no secret) as the admin then the output as okdp-ci, as one
+#   commit on top of the repository's main (refused when the console committed there
+#   since the last push; --force replaces the console's changes). The people get
+#   their teams from their Keycloak groups: the platform's administrators
+#   (global.okdp.access.admins of platform.yaml) the organization's owners, the
+#   groups of each project's roles (its compiled AppProject, project.yaml access, by
+#   default okdp-project-<p> editor) a team okdp-project-<p> writing its repository
+#   (split okdp-project-<p>, io okdp-projects), okdp-project-<p>-viewers reading it,
+#   never the platform's repository nor the output; the OAuth source keycloak of
+#   Forgejo maps the groups to the teams, created by --sign-in (once the platform is
+#   up, README after step 5), updated by every --push once it exists. It signs in to
+#   Forgejo as its admin, of the Secret gitea.admin.existingSecret of sandbox-charts'
 #   bootstrap/forgejo (README, step 3).
 #   --dry-run compiles, prints what it would push and keeps the parts (in --work DIR,
 #   or a printed directory).
 #
 # Usage: configure.sh [-i|--interactive] [--engine argocd|flux]
 #                     [--topology io|split] [--root DIR]
-#        configure.sh --push [--force] [--dry-run] [--work DIR] [--catalog NAME=SRC]...
+#        configure.sh --push [--force] [--sign-in] [--dry-run] [--work DIR]
+#                     [--catalog NAME=SRC]...
 #        configure.sh --show
 # --catalog NAME=SRC: see scripts/compile.sh. Requires bash >= 4, yq v4; --push also
 # git, okdp-gitops (https://github.com/OKDP/okdp-gitops: make build; OKDP_GITOPS names
@@ -84,6 +98,7 @@ INTERACTIVE=false
 SHOW=false
 PUSH=false
 FORCE=false
+SIGN_IN=false
 DRY_RUN=false
 WORK_DIR=""
 CATALOGS=()
@@ -98,11 +113,12 @@ while [[ $# -gt 0 ]]; do
     --show) SHOW=true; shift ;;
     --push) PUSH=true; shift ;;
     --force) FORCE=true; shift ;;
+    --sign-in) SIGN_IN=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --work) WORK_DIR="$2"; shift 2 ;;
     --catalog) CATALOGS+=("$2"); shift 2 ;;
     --root) ROOT="$(cd "$2" && pwd)"; shift 2 ;;
-    -h|--help) sed -n '18,70p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,87p' "$0"; exit 0 ;;
     *) echo "configure: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -146,7 +162,7 @@ part() {
 }
 
 push() {
-  local owner prefix sha message p force=() out output sources=()
+  local owner prefix sha message p force=() out output split sources=()
   # shellcheck source=lib/forgejo.sh
   source "$SCRIPTS/lib/forgejo.sh"
   TOP="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)" \
@@ -214,34 +230,44 @@ push() {
   # Actions: the output's only; no workflow of the sources runs.
   for p in "${sources[@]}"; do forgejo_set_actions "$owner" "$p" false; done
   forgejo_set_actions "$owner" "$output" true
-  forgejo_bot "$owner" "$([[ "$CUR_TOPOLOGY" == split ]] && echo true || echo false)" "${sources[@]}" "$output"
+  # The accounts, none an admin: okdp-ci (writes the output, reads the sources and
+  # the catalogs), okdp-reader (reads the output), okdp-console (writes the sources,
+  # reads the output and the catalogs) when the layout installs the control plane.
+  split="$([[ "$CUR_TOPOLOGY" == split ]] && echo true || echo false)"
+  forgejo_accounts "$owner" "$split" "$output" "${sources[@]}"
+  # The people's teams, from the compiled tree: the groups of the platform's admins
+  # and of each project's roles.
+  forgejo_people_teams "$owner" "$CUR_TOPOLOGY" "$out"
   # The CI: its token in the output repository only, its runner registered for it
-  # only, its main pushed by the bot alone (no force push, no deletion).
+  # only, its main pushed by okdp-ci alone (no force push, no deletion).
   forgejo_ci_token "$owner" "$output" "${sources[@]}"
   forgejo_register_runner "$owner" "$output"
   forgejo_protect_branch "$owner" "$output" main
-  # The engines' read token for private repositories, in argocd (Argo CD's
+  # The engines' read token of the output repository, in argocd (Argo CD's
   # repository credentials) and flux-system (Flux's GitRepository secretRef): one
-  # token, two Secrets.
-  forgejo_engine_secrets "$owner" argocd okdp-gitops-reader flux-system okdp-gitops-reader
+  # token of okdp-reader, two Secrets.
+  forgejo_engine_secrets argocd okdp-gitops-reader flux-system okdp-gitops-reader
   if ! $DRY_RUN; then
-    # Argo CD discovers repository credentials from labeled Secrets (repo-creds: a
-    # credential template matching all repositories under the Forgejo URL).
-    kubectl -n argocd label secret okdp-gitops-reader argocd.argoproj.io/secret-type=repo-creds --overwrite >/dev/null 2>&1 || true
+    # Argo CD discovers repository credentials from labeled Secrets: a repository
+    # (not a repo-creds template, which would match every repository under its URL
+    # prefix), the output repository's exact URL.
+    kubectl -n argocd label secret okdp-gitops-reader argocd.argoproj.io/secret-type=repository --overwrite >/dev/null
     kubectl -n argocd patch secret okdp-gitops-reader --type merge \
-      -p "$(jq -cn --arg u "$(forgejo_cluster_url)" '{stringData: {url: $u, type: "git"}}')" >/dev/null
+      -p "$(jq -cn --arg u "$(output_url "$CUR_TOPOLOGY")" '{stringData: {url: $u, type: "git"}}')" >/dev/null
   fi
 
-  # The sources, as the admin, then the output, as the bot: the CI compiles them at
+  # The sources, as the admin, then the output, as okdp-ci: the CI compiles them at
   # its next run.
   for p in "${sources[@]}"; do
     forgejo_push_tree "$WORK/parts/$p" "$owner" "$p" "$message" "${force[@]}"
   done
-  forgejo_push_tree "$out" "$owner" "$output" "$message" "${force[@]}" --as-bot
-  if [[ "$CUR_TOPOLOGY" == split ]]; then
-    forgejo_token_secret "$SERVER_NAMESPACE" \
-      "$(yq '.gitops.forgejoTokenSecret // ""' "$SERVER_VALUES")"
-  fi
+  forgejo_push_tree "$out" "$owner" "$output" "$message" "${force[@]}" --as-ci
+  # The console's tokens (split: also the one that creates the projects'
+  # repositories), in the server's namespace.
+  forgejo_console_secrets "$split"
+  # The sign-in with Keycloak, its group-team map: created with --sign-in, else
+  # updated when it exists.
+  forgejo_sign_in "$owner" "$SIGN_IN"
   if $DRY_RUN; then
     echo "Dry run: nothing pushed; the parts are in $WORK/parts"
     return
@@ -253,6 +279,7 @@ it reads $(entry_url).
 EOF
 }
 
+if $SIGN_IN && ! $PUSH; then die "--sign-in goes with --push"; fi
 if $PUSH; then
   if [[ -n "$ENGINE$TOPOLOGY" ]] || $INTERACTIVE; then
     die "--push sends the committed layout: configure, commit, then push (two runs)"

@@ -4,4 +4,9 @@
 # request}, shared by its instances). The demo needs none of its own: its services claim
 # databases of their own of the platform's class, and their object store is the
 # platform's connection platform-s3.
+# Its people: no access, the default, {okdp-project-demo: editor}, the Keycloak group
+# of the demo users bob, mark, nina and grace (sandbox-charts'
+# bootstrap/keycloak/realm.yaml): Argo CD's editor of its Applications, the Forgejo
+# team of its repository, edit of its namespace. Add viewers or admins with
+# access: {okdp-project-demo: editor, <group>: viewer}.
 description: Demonstration project, full data chain

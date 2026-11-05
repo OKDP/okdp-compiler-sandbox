@@ -2,6 +2,9 @@
 # Its context (level 1, over platform.yaml): the S3 store its provisioner provisions
 # the claims of buckets on, a connection of its own, which only its instances
 # reference.
+# Its people: no access, the default, {okdp-project-s3-system: editor}, a Keycloak group
+# without members (sandbox-charts' bootstrap/keycloak/realm.yaml): the platform's
+# administrators run it.
 description: The provider of the claims of buckets on the platform's S3 store
 # RustFS of the bootstrap (sandbox-charts' bootstrap/rustfs), as platform-s3 of
 # platform.yaml, with another identity: the provisioning identity okdp-provisioner

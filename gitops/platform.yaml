@@ -36,14 +36,19 @@ global:
 
     # Keycloak, a dependency of the platform installed at the bootstrap
     # (sandbox-charts' bootstrap/keycloak): the platform's connection to it is these
-    # settings. The 5 URLs are maintained by hand (changing the realm or the suffix
-    # means changing all five). clientId is the console's own client (okdp-ui),
+    # settings, its realm okdp, the applications' and the people's (the realm master
+    # is Keycloak's administrators' only). The 5 URLs are maintained by hand
+    # (changing the realm or the suffix means changing all five, and the
+    # registration URL). clientId is the console's own client (okdp-ui),
     # declared in the Keycloak realm (sandbox-charts' bootstrap/keycloak/realm.yaml)
     # whatever clientProvisioning says. clientProvisioning: how the services get their
     # OAuth clients.
     #   dcr (the sandbox default): each service registers its client in Keycloak with its
-    #     oidc-dcr Job (anonymous dynamic client registration, the realm's anonymous
-    #     policies) and reads it from Secret <release>-<namespace>-dcr.
+    #     oidc-dcr Job (dynamic client registration with an initial access token of
+    #     its namespace, Secret okdp-dcr-token, which sandbox-charts'
+    #     bootstrap/openbao/init.sh mints for the namespaces of scripts/bootstrap.sh's
+    #     DCR_NAMESPACES; the realm refuses anonymous registration) and reads it from
+    #     Secret <release>-<namespace>-dcr.
     #   existing (the alternative): the clients are created in Keycloak beforehand
     #     (the realm's clients) and their credentials put in Secrets creds-<release>-oauth2
     #     (projects/demo/instances/secrets, each client_secret the realm's, generated at
@@ -52,12 +57,12 @@ global:
     #     the dcr block.
     oidc:
       enabled: true
-      issuerUri: https://keycloak.okdp.sandbox/realms/master
+      issuerUri: https://keycloak.okdp.sandbox/realms/okdp
       clientId: okdp-ui
-      authUrl: https://keycloak.okdp.sandbox/realms/master/protocol/openid-connect/auth
-      tokenUrl: https://keycloak.okdp.sandbox/realms/master/protocol/openid-connect/token
-      jwksUri: https://keycloak.okdp.sandbox/realms/master/protocol/openid-connect/certs
-      userinfoUrl: https://keycloak.okdp.sandbox/realms/master/protocol/openid-connect/userinfo
+      authUrl: https://keycloak.okdp.sandbox/realms/okdp/protocol/openid-connect/auth
+      tokenUrl: https://keycloak.okdp.sandbox/realms/okdp/protocol/openid-connect/token
+      jwksUri: https://keycloak.okdp.sandbox/realms/okdp/protocol/openid-connect/certs
+      userinfoUrl: https://keycloak.okdp.sandbox/realms/okdp/protocol/openid-connect/userinfo
       displayName: keycloak
       scope: "openid profile email groups"
       usePKCE: true
@@ -67,7 +72,7 @@ global:
       insecureSkipVerify: true
       clientProvisioning: dcr
       dcr:
-        registrationUrl: https://keycloak.okdp.sandbox/realms/master/clients-registrations/openid-connect
+        registrationUrl: https://keycloak.okdp.sandbox/realms/okdp/clients-registrations/openid-connect
         authMethod: initialAccessToken
 
     proxy:
@@ -155,6 +160,34 @@ global:
               role: okdp
               serviceAccountRef:
                 name: okdp-secrets
+
+    # Who administers the platform, and the people of the projects: Keycloak's groups
+    # (sandbox-charts' bootstrap/keycloak/realm.yaml), as the tokens' groups claim
+    # names them. admins: the platform's administrators, bound by the bootstrap, not
+    # compiled: Argo CD's role:admin (argocd/bootstrap/argocd-rbac-cm-patch.yaml),
+    # Forgejo's administrators and the owners of the organization (the OAuth source's
+    # admin group and group-team map, scripts/configure.sh --push --sign-in). A
+    # project's people are its project.yaml's access, {<group>: viewer|editor|admin},
+    # by default {okdp-project-<namespace>: editor}: the compiler writes their roles
+    # in the project's AppProject and RoleBindings of its namespace (project/access.yaml),
+    # and configure.sh --push their Forgejo teams, from the compiled AppProject.
+    # groupPrefix: the prefix the API server gives the groups of its OIDC users
+    # (--oidc-groups-prefix), "" here: kind's API server authenticates no Keycloak
+    # user (no --oidc-issuer-url), kubectl with a Keycloak sign-in is not set up, the
+    # RoleBindings wait for it.
+    access:
+      admins:
+        - platform_admin
+      groupPrefix: ""
+
+    # The control plane, installed (projects/okdp-system/instances/okdp-control-plane-server):
+    # its ServiceAccount, okdp-system/<release>, which the compiler binds in each
+    # project's namespace to the Role okdp-control-plane, what the server does there
+    # (project/control-plane.yaml). Remove it with the instance.
+    controlPlane:
+      serviceAccount:
+        namespace: okdp-system
+        name: okdp-system-okdp-control-plane-server
 
     # The platform's own projects, by namespace: their instances install
     # cluster-scoped objects (CRDs, cluster roles, webhooks), write other namespaces

@@ -13,11 +13,12 @@ It installs the dependencies of the platform with Helm, as a company installs it
 The sandbox is for a single workstation, not a shared or reachable environment:
 
 - It ships **published demo credentials**: console user `adm` / `adm` and the other
-  demo users of the realm (password = user name,
+  demo users of the realm `okdp` (password = user name,
   [`bootstrap/keycloak/realm.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/keycloak/realm.yaml): test fixtures to
   sign in with, not service credentials). Never reuse them, and never reuse these
-  values outside the sandbox. Keycloak's admin (`admin`) is not one of them: its
-  password is random, generated at the bootstrap (step 3, Secret
+  values outside the sandbox. Keycloak's admin (`admin`, of the realm `master`,
+  Keycloak's administrators' only: the applications and the people are in `okdp`)
+  is not one of them: its password is random, generated at the bootstrap (step 3, Secret
   `keycloak/keycloak-admin`).
 - No client secret is in Git: the secret of each client of the realm is generated at
   the bootstrap (step 3, Secret `keycloak/keycloak-client-secrets`), imported into the
@@ -32,15 +33,18 @@ The sandbox is for a single workstation, not a shared or reachable environment:
 - The credentials of Keycloak, Forgejo and the S3 store are generated on your cluster,
   never committed: Keycloak's admin and the secrets of the realm's clients (step 3),
   Forgejo's admin (step 3), RustFS' root and the platform's access key
-  (step 3, External Secrets' generators), and those of `okdp-gitops`, the account the
-  console and the CI write to the deployments repositories with (not an admin; its
-  password in a Secret of the console's namespace only, a token of it in the Actions
-  secret of the output repository only, which Forgejo gives to its CI jobs only: the
-  repositories of the sources hold no token and no workflow). The repositories are
-  private. The output repository's `main` takes the pushes of that account alone:
-  a writer of the output would deploy anything, past every check of the compile. The
-  console still signs in as that account, so whoever reads its credentials can push
-  the output, until the console gets an account of its own.
+  (step 3, External Secrets' generators), and the tokens of the three Forgejo
+  accounts of the deployments repositories, none an admin, each with the teams of
+  the repositories it needs only, none with a password anyone keeps:
+  `okdp-ci`, the CI, the only pusher of the output repository's `main`, its token in
+  the Actions secret of the output repository only, which Forgejo gives to its CI
+  jobs only (the repositories of the sources hold no token and no workflow);
+  `okdp-reader`, Argo CD's and Flux's, reads the output repository only;
+  `okdp-console`, the control plane's, writes the sources only (and reads the
+  output), its token in a Secret of the console's namespace only. People push with
+  their own accounts, signed in through Keycloak. The repositories are private. A
+  writer of the output would deploy anything, past every check of the compile: the
+  console's credentials cannot.
 - **What keeps the projects apart**, as on a platform:
   - the repositories, Forgejo's unit of write permission (who writes a repository
     writes every file of it): `platform.yaml` and `catalogs.yaml` in a repository
@@ -49,6 +53,14 @@ The sandbox is for a single workstation, not a shared or reachable environment:
     platform's own among them (a small team, every member trusted with all of
     them); in `split`, a repository per project, its team's only. The output is
     the CI's alone;
+  - the people's roles, from their Keycloak groups, without the console: the
+    platform's administrators (`global.okdp.access.admins`, the group
+    `platform_admin`) administer Argo CD and Forgejo; a project's groups (its
+    `project.yaml` `access`, by default `okdp-project-<p>` editor) get that
+    project's Argo CD role (its AppProject, compiled), the Forgejo team of its
+    repository, and `view`, `edit` or `admin` of its namespace (RoleBindings,
+    compiled; kubectl as a Keycloak user is not set up in the sandbox); Argo CD
+    gives nobody else a role;
   - the secrets crossing namespaces are scoped per namespace: each namespace signs in
     to OpenBao, the platform's secret store, as its own ServiceAccount `okdp-secrets`
     (the SecretStore the compiler writes in it), and OpenBao's policy, templated on
@@ -112,7 +124,7 @@ The platform's dependencies ([`bootstrap/`](https://github.com/OKDP/sandbox-char
 | CloudNativePG, the PostgreSQL operator | `cloudnative-pg` | the platform's database server (`cnpg-system/cnpg-postgresql`) runs on it |
 | External Secrets | `external-secrets` | the SecretStore the compiler writes in each project's namespace, over the secret store |
 | OpenBao, the platform's secret store: its KV mount `okdp`, the Kubernetes auth and the policy of the namespaces, the platform's keys | `openbao` | `global.okdp.secrets`: what crosses namespaces (the S3 access key, the secrets of Keycloak's clients, the claims' credentials), each namespace its own keys |
-| Keycloak, its PostgreSQL and its realm (users, roles, clients and their secrets, generated, the services' anonymous client registration) | `keycloakx` (codecentric) | `global.okdp.oidc`; its clients' secrets in the secret store, under the keys of the namespaces that read them (`<namespace>/keycloak/<client>`) |
+| Keycloak, its PostgreSQL and its realm `okdp` (users, roles, clients and their secrets, generated; the services register their clients with initial access tokens, no anonymous registration; `master` for Keycloak's admin only) | `keycloakx` (codecentric) | `global.okdp.oidc`; its clients' secrets in the secret store, under the keys of the namespaces that read them (`<namespace>/keycloak/<client>`) |
 | RustFS, the S3 store, its buckets and the platform's access key | `rustfs` | the connection `platform-s3` (contract `s3`), its credentials in the secret store (`platform/s3`) |
 | Forgejo, the deployments repositories and the service catalogs | `forgejo` | the control plane server's settings |
 | The CI runner of the deployments repositories, each compile a container of the okdp-gitops image on its Docker daemon | [`forgejo-runner`](https://github.com/OKDP/sandbox-charts/tree/main/bootstrap/forgejo-runner) (this repository's chart) | registered by `scripts/configure.sh --push` for the output repository only |
@@ -406,23 +418,30 @@ into the output repository, a new container of the okdp-gitops image on the runn
 own Docker daemon; a run whose sources did not move since the last compile
 (`sources.yaml` of the output) stops early. Forgejo runs the schedules of its Actions
 ([`bootstrap/forgejo`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/forgejo/values.yaml), `cron.start_schedule_tasks`).
-The console and the CI write to the repositories as `okdp-gitops`, a Forgejo user the
-script creates, not an admin, with write access to the repositories of the topology
-only and read access to the catalogs; it writes its password, random, to Secret
-`okdp-gitops-bot` of the console (`okdp-system`), a token of it to the Actions secret
-`OKDP_GITOPS_TOKEN` of the output repository only (the CI's jobs get it from there;
-the runner holds no git credentials; the token goes in clear, over `http://`, to the
-cluster's services only: the workflow carries
+The script gives each writer and reader its own Forgejo account, none an admin,
+member of the teams of the repositories it needs only (an older sandbox's single
+account `okdp-gitops` is deleted, its tokens and teams with it):
+
+| Account | Writes | Reads | Its token, where |
+|---|---|---|---|
+| `okdp-ci`, the CI | the output repository (the only pusher of its `main`) | the sources and the catalogs (split: every repository of `okdp`, so that a project the console creates is compiled at the next run) | `write:repository`, the Actions secret `OKDP_GITOPS_TOKEN` of the output repository only |
+| `okdp-reader`, Argo CD and Flux | nothing | the output repository only | `read:repository`, Secrets `argocd/okdp-gitops-reader` (a repository credential of the output's exact URL) and `flux-system/okdp-gitops-reader` |
+| `okdp-console`, the control plane (when the layout installs it) | the sources (split: may create a new project's repository) | the output (the compiled tree it shows) and the catalogs | `write:repository`, Secret `okdp-system/okdp-console-git` (`gitops.credentialsSecret`: user name and token, no password); split, `write:organization`, Secret `okdp-system/okdp-forgejo-token` |
+
+Each run sets a random password on each account, creates its tokens with it and
+forgets it; their previous tokens are deleted. The CI's jobs get the CI's token from
+the output repository's Actions secret (the runner holds no git credentials; the
+token goes in clear, over `http://`, to the cluster's services only: the workflow
+carries
 `GITOPS_INSECURE_HTTP_HOSTS='*.svc.cluster.local'`, `CI_INSECURE_HTTP_HOSTS` of
 `scripts/lib/topology.sh`, with which `scripts/check.sh` has `okdp-gitops workflow`
 write the CI's workflow, refused for another `http://` host), and
 the runner's registration secret to `forgejo/okdp-runner-registration`, nowhere else.
-The output repository's `main` is protected: `okdp-gitops` alone pushes there (its
-push whitelist), never the admin nor a person, no force push; the script pushes the
-sources as the admin and the output as `okdp-gitops`. For `split`, it also gives the
-console a Forgejo token of `okdp-gitops` (Secret `okdp-system/okdp-forgejo-token`) to
-create the repositories of new projects (a repository the console creates gets no
-workflow, no secret and no runner: the next run of the output's CI compiles it). It
+The output repository's `main` is protected: `okdp-ci` alone pushes there (its
+push whitelist), never the admin, the console nor a person, no force push; the
+script pushes the sources as the admin and the output as `okdp-ci`. A repository the
+console creates for a new project (`split`) gets no workflow, no secret and no
+runner: the next run of the output's CI compiles it. It
 reaches Forgejo through a `kubectl port-forward` of the current context, as the admin
 of Secret `forgejo/okdp-forgejo-admin`; `--dry-run` shows what it would do:
 
@@ -457,8 +476,10 @@ kubectl -n argocd get applications --watch
 
 The Argo CD UI is at https://argocd.okdp.sandbox, through the bootstrap's ingress-nginx
 ([`gitops/argocd/ingress.yaml`](gitops/argocd/ingress.yaml)): **Log in via Keycloak** with a
-demo user (`adm` and `alice`, realm role `platform_admin`, are admins; the others read-only),
-or user `admin`, password in secret `argocd/argocd-initial-admin-secret`.
+demo user (`adm` and `alice`, of the group `platform_admin`, are admins; `bob`, `mark`,
+`nina` and `grace`, of the group `okdp-project-demo`, the editors of the project `demo`:
+they see and sync its Applications only; a user of no group sees nothing), or user
+`admin`, password in secret `argocd/argocd-initial-admin-secret`.
 
 ### 5b. Install with Flux
 
@@ -497,19 +518,30 @@ depending on the machine and the network.
 
 Then turn on Forgejo's sign-in with Keycloak, once: restart Forgejo (it reads the sandbox
 CA bundle at startup, and the platform creates the bundle after Forgejo's bootstrap), then
-create its OAuth source (in Forgejo's database: the chart would recreate it at every start,
-which then needs Keycloak reachable), with the secret of the realm's client `forgejo`
-(step 3), given to the pod on its standard input:
+push again with `--sign-in`, which creates its OAuth source (in Forgejo's database: the
+chart would recreate it at every start, which then needs Keycloak reachable), with the
+secret of the realm's client `forgejo` (step 3), given to the pod on its standard input,
+and the map of the Keycloak groups to the teams: the platform's administrators
+(`global.okdp.access.admins` of [`gitops/platform.yaml`](gitops/platform.yaml), the
+group `platform_admin`) are Forgejo's administrators and the organization's owners;
+the groups of each project's roles (its `project.yaml` `access`, by default
+`okdp-project-<p>` editor) a team `okdp-project-<p>` that writes the project's
+repository (split `okdp-project-<p>`; io `okdp-projects`, every project's), the
+viewers a team `okdp-project-<p>-viewers` that reads it; nobody writes the platform's
+repository but its owners, nor the output but `okdp-ci`. Each later `--push` updates
+the map:
 
 ```sh
 kubectl -n forgejo rollout restart deployment forgejo
 kubectl -n forgejo rollout status deployment forgejo
-kubectl -n keycloak get secret keycloak-client-secrets -o jsonpath='{.data.forgejo}' | base64 -d \
-  | kubectl -n forgejo exec -i deploy/forgejo -c forgejo -- sh -c 'read -r secret;
-    exec forgejo admin auth add-oauth --name keycloak --provider openidConnect --key forgejo --secret "$secret" \
-      --auto-discover-url https://keycloak.okdp.sandbox/realms/master/.well-known/openid-configuration \
-      --group-claim-name groups --admin-group platform_admin'
+scripts/configure.sh --push --sign-in
 ```
+
+A person's teams follow their groups at each sign-in. kubectl as a Keycloak user is
+not set up: kind's API server authenticates no OIDC user (no `--oidc-issuer-url`),
+so the RoleBindings the compiler writes for the projects' groups (`view`, `edit`,
+`admin` of their namespace, `global.okdp.access.groupPrefix` empty) wait for an API
+server that does.
 
 ### Proxy (optional)
 
@@ -537,9 +569,12 @@ re-rendered. The dependencies take it from their values, in sandbox-charts: `dom
 
 The sandbox registers the services' OAuth clients by dynamic client registration
 (`global.okdp.oidc.clientProvisioning: dcr`): each service's oidc-dcr Job registers its
-client in Keycloak (anonymous registration, the anonymous client registration policies of
-the realm, `components` of [`realm.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/keycloak/realm.yaml)) and writes it to
-Secret `<release>-<namespace>-dcr`. The Job runs `quay.io/adaltas/oidc-dcr-job`.
+client in the realm `okdp` with an initial access token of its namespace
+(`global.okdp.oidc.dcr.authMethod: initialAccessToken`; Secret `okdp-dcr-token`, from
+OpenBao, where sandbox-charts' `bootstrap/openbao/init.sh` mints one per namespace of
+`DCR_NAMESPACES`, `demo` by default, step 3) and writes it to Secret
+`<release>-<namespace>-dcr`. The realm refuses anonymous registration (Keycloak's own
+client registration policies, [`realm.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/keycloak/realm.yaml) declares none). The Job runs `quay.io/adaltas/oidc-dcr-job`.
 The console's own client (`okdp-ui`) stays declared in the Keycloak realm. The alternative is
 `clientProvisioning: existing` (drop the `dcr` block): the services then use the clients declared in
 the realm and their Secrets `creds-<release>-oauth2` (`projects/demo/instances/secrets`), whose
@@ -555,9 +590,9 @@ kubectl -n demo get secret creds-demo-jupyterhub-oauth2 -o jsonpath='{.data.clie
 scripts/bootstrap.sh   # or the helm upgrade of Keycloak and sandbox-charts' bootstrap/openbao/init.sh (step 3)
 ```
 
-Anonymous registration does not check where a registration comes from (the Trusted Hosts
-policy's sender check is off): fine on a sandbox, see the keycloak package of sandbox-charts
-(its README, "Anonymous client registration") before exposing such a Keycloak.
+A project of another namespace whose services register clients needs its token: add
+the namespace to `DCR_NAMESPACES` and run `scripts/bootstrap.sh` again (or
+sandbox-charts' `bootstrap/openbao/init.sh` with it).
 
 ### 6. DNS setup
 

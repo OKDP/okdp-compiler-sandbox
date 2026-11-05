@@ -36,7 +36,8 @@
 #      random password created once, its database, a CloudNativePG cluster, the
 #      secrets of the realm's clients, generated once
 #      (bootstrap/keycloak/client-secrets.sh: Secret keycloak/keycloak-client-secrets,
-#      none in Git), then Keycloak and its realm, which reads them;
+#      none in Git), then Keycloak and its realms, okdp (the applications and the
+#      people, which reads them) and master (Keycloak's administrators only);
 #   7. RustFS, the S3 store (rustfs): its buckets, and the platform's access key;
 #   8. OpenBao (openbao), the platform's secret store, then its init
 #      (bootstrap/openbao/init.sh): initialized and unsealed (SANDBOX ONLY: its
@@ -45,7 +46,9 @@
 #      S3 access key under platform/s3; the secret of each client of the realm
 #      under <namespace>/keycloak/<client> (property client_secret) of the
 #      namespaces that read it (bootstrap/openbao/clients.yaml), where the
-#      compiled instances read it;
+#      compiled instances read it; an initial access token of the realm okdp per
+#      namespace of DCR_NAMESPACES (demo by default), with which its services
+#      register their OAuth clients (the realm refuses anonymous registration);
 #   9. Forgejo (forgejo), the Git server of the deployments repositories and of the
 #      catalogs, its admin account in Secret forgejo/okdp-forgejo-admin, a random
 #      password created once, then its CI runner (bootstrap/forgejo-runner, a chart of
@@ -73,7 +76,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) DIR="$(cd "$2" && pwd)"; shift 2 ;;
     --catalog) CATALOGS+=("$2"); shift 2 ;;
-    -h|--help) sed -n '18,63p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,66p' "$0"; exit 0 ;;
     *) echo "bootstrap: unknown argument: $1" >&2; exit 2 ;;
   esac
 done

@@ -23,7 +23,8 @@
 # then applies a sync wave once the Applications of the previous waves are Healthy,
 # the order of the instances that wait for others (Argo CD assesses no health of
 # Applications by default).
-# Sign-in with Keycloak: the realm's public client argocd (bootstrap/keycloak), the PKCE flow
+# Sign-in with Keycloak: the public client argocd of the realm okdp (sandbox-charts'
+# bootstrap/keycloak/realm.yaml; master is Keycloak's administrators' only), the PKCE flow
 # of the UI and of argocd login --sso, no client secret. The issuer's certificate is not
 # checked: the sandbox CA does not exist yet when this patch is applied (as the control
 # plane server's oidc.insecureSkipVerify); argocd-server reads that setting at startup
@@ -34,7 +35,7 @@ data:
   url: https://argocd.okdp.sandbox
   oidc.config: |
     name: Keycloak
-    issuer: https://keycloak.okdp.sandbox/realms/master
+    issuer: https://keycloak.okdp.sandbox/realms/okdp
     clientID: argocd
     enablePKCEAuthentication: true
     requestedScopes: ["openid", "profile", "email", "groups"]
