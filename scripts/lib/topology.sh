@@ -207,25 +207,6 @@ ci_topology_file() { topology_file "$1" | grep -v '^forgejo:'; }
 # workflow carries it, as GITOPS_INSECURE_HTTP_HOSTS of the job's environment.
 CI_INSECURE_HTTP_HOSTS="${CI_INSECURE_HTTP_HOSTS:-*.svc.cluster.local}"
 
-# ci_http_refused TOPOLOGY: the http:// URLs of the CI's topology whose host
-# CI_INSECURE_HTTP_HOSTS does not allow, one per line; none: okdp-gitops workflow
-# writes the workflow.
-ci_http_refused() {
-  local url host pattern ok patterns
-  IFS=, read -ra patterns <<<"$CI_INSECURE_HTTP_HOSTS"
-  while read -r url; do
-    [[ "${url,,}" == http://* ]] || continue
-    host="${url#*://}"; host="${host%%/*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
-    ok=false
-    for pattern in "${patterns[@]}"; do
-      pattern="${pattern// /}"
-      # shellcheck disable=SC2053 # the pattern is a glob
-      [[ -n "$pattern" && "$host" == ${pattern,,} ]] && ok=true
-    done
-    $ok || echo "$url"
-  done < <(ci_topology_file "$1" | yq -r '.platform.url, .projects.url, .output.url')
-}
-
 # The output repository of a topology: compiled/, argocd/ at its root, a repository
 # of its own in every topology.
 output_url() { echo "$(forgejo_cluster_url)/$(forgejo_owner)/$OUTPUT_REPO.git"; }

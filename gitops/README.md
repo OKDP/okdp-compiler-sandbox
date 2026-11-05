@@ -351,7 +351,8 @@ claimers: [demo]                  # rare, a provider's: the namespaces that may 
 
 `service` and `version`, and, for a provider, `claimers`, nothing else: the directory
 names the instance, its project directory the namespace, and the release is
-`<p>-<i>`. Rules (enforced by the compile and by `scripts/check.sh`):
+`<p>-<i>`. Rules (okdp-compiler's, enforced by the compile, which `scripts/check.sh`
+runs and reports):
 
 | | rule |
 |---|---|
@@ -429,10 +430,11 @@ company's own S3 takes its place with its fields and its key in the store. A
 project's own connection may only name a key of its namespace, `<p>/<key>`: the
 store's policy allows nothing else ([Claims](#claims)).
 
-`check.sh` validates each connection against `contracts/<contract>.schema.json` of the
-catalogs (unknown fields, secret fields present, required non-secret fields missing,
-`secretRef` a `name` or a `remoteKey`); the compile checks each connection against the
-contract the parameter that names it expects, and what the parameter requires of it.
+The compile checks each connection an instance references against
+`contracts/<contract>.schema.json` of the catalogs (unknown fields, secret fields
+written in clear, `secretRef` a `name` or a `remoteKey`, not both), against the
+contract the parameter that names it expects, and what the parameter requires of it
+(`scripts/check.sh` runs it); a contract two catalogs hold must be the same file.
 
 ## Claims
 
@@ -537,9 +539,11 @@ package missing from the catalogs, a missing connection, a parameter the package
 refuses, a claim no provider binds, a reference to an instance the project does not
 have) is reported whole, and nothing is written. The values are checked against each
 upstream chart's `values.schema.json` by the control plane server before it commits
-(its chart cache, `gitops.chartCacheDir`), by the CI (its `--charts` cache) and by
-`scripts/check.sh --helm` (Helm renders every compiled instance; `--charts DIR`, a
-cache filled by `scripts/pull-charts.sh`, spares it the network).
+(its chart cache, `gitops.chartCacheDir`), and by the compile given a chart cache
+(`okdp-gitops compile --charts DIR`, `scripts/check.sh --charts DIR`, the sandbox's
+CI), which pulls the upstream charts there itself; `scripts/check.sh --helm` also
+renders every compiled instance with Helm (its dependencies fetched by `helm
+dependency build`).
 
 ## Generated files
 
@@ -703,8 +707,7 @@ directory; `configure.sh`, `compile.sh` and `check.sh` take another layout with
 scripts/bootstrap.sh              # the platform's dependencies, with helm (README, step 3)
 scripts/configure.sh              # engine, topology; --push: compiled, to Forgejo
 scripts/compile.sh                # compiles the tree into an output directory, the catalogs from Git
-scripts/check.sh                  # CI: the tree compiles, shapes and contracts valid
-scripts/pull-charts.sh            # fills a chart cache with the upstream charts (check.sh --helm)
+scripts/check.sh                  # CI: the sandbox's own files, the tree compiles
 scripts/compare-engines.sh        # compares the live objects of two clusters (Argo vs Flux)
 scripts/e2e-kind.sh               # end-to-end install on a throwaway kind cluster
 scripts/lib/                      # shared by the scripts (topology, catalogs, Forgejo)
@@ -735,22 +738,27 @@ scripts/lib/                      # shared by the scripts (topology, catalogs, F
   [okdp-gitops](https://github.com/OKDP/okdp-gitops), `make build`; `OKDP_GITOPS` names
   it).
 - `scripts/check.sh [--output DIR] [--catalog NAME=SRC]... [--charts DIR] [--helm]`:
-  YAML syntax, file shapes (`platform.yaml`, `catalogs.yaml` and its menu, each
-  `project.yaml`, each `instance.yaml` a package of the catalogs, each `config.yaml`,
-  `argocd/` and `flux/` reading the output repository of the topology), connection
-  contracts (from the catalogs' `contracts/`), sandbox-charts holding the bootstrap
-  (`bootstrap/charts.yaml`, which sandbox-charts checks itself:
-  `scripts/check-bootstrap.sh`), the tree compiles (into a temporary
-  output tree, or `--output DIR`), `kustomize build` of every kustomization of that
-  output; `--helm` also runs `helm template` of every compiled instance (its umbrella,
-  its dependencies from the `--charts` cache or `helm dependency build`). Needs yq v4, jq, git and okdp-gitops; kustomize and helm
+  the rules of the tree (names, releases, `platform.yaml`, `project.yaml`,
+  `instance.yaml`, `config.yaml`, `connections.yaml`, the connections and their
+  contracts, the claims) are the compiler's: the compile reports them, the script
+  re-implements none. It checks the sandbox's own files: the files the scripts and
+  the engines read parse (the server's values, `catalogs.yaml`, `projects.yaml`,
+  `platform.yaml`, `argocd/`, `flux/`), the server's topology is the sandbox's,
+  `argocd/` and `flux/` read its output repository, the CI's workflow is written
+  (`okdp-gitops workflow --for output`, which refuses an `http://` host outside
+  `CI_INSECURE_HTTP_HOSTS`), `projects.yaml` lists the projects (split), each
+  project has a `project.yaml`, the privileged projects of `platform.yaml` are
+  projects of `projects/` or `optional/projects/`, sandbox-charts holds the
+  bootstrap (`bootstrap/charts.yaml`, which sandbox-charts checks itself:
+  `scripts/check-bootstrap.sh`). Then the tree compiles (into a temporary output
+  tree, or `--output DIR`; its errors and warnings printed as the compile reports
+  them; `--charts DIR`, the compile's chart cache, `okdp-gitops compile --charts
+  DIR`, which pulls the upstream charts there and checks the values against them),
+  the optional projects too, moved into `projects/` (a copy of the layout), and
+  `kustomize build` of every kustomization of that output; `--helm` also runs `helm
+  template` of every compiled instance (its umbrella, its dependencies fetched by
+  `helm dependency build`). Needs yq v4, git and okdp-gitops; kustomize and helm
   optional.
-- `scripts/pull-charts.sh --output DIR CACHE`: fills the chart cache CACHE with the
-  upstream charts the compiled instances of the output tree DIR (`compile.sh --output
-  DIR`) render (the dependencies of the compiled umbrellas), in the layout of the compiler's chart cache (`helm pull --untar` under
-  `CACHE/<repository>/<chart>-<version>/`), for `check.sh --helm --charts CACHE` (and
-  `okdp-gitops compile --charts CACHE`). The packages are not pulled: they are read
-  from the catalogs. Needs yq v4 and helm.
 - `scripts/e2e-kind.sh up|push|down argocd|flux`: installs the sandbox on a throwaway
   kind cluster: the platform's dependencies (`bootstrap.sh`), then the layout through
   its Forgejo (`configure.sh --push`, the topology `E2E_TOPOLOGY`), with the catalogs of

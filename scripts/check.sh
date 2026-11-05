@@ -15,21 +15,22 @@
 #  limitations under the License.
 #
 
-# CI check of the deployments layout (see gitops/README.md).
-#
-#   1. every YAML file parses;
-#   2. the shapes: platform.yaml (its privileged projects, projects of the layout),
-#      catalogs.yaml (its repositories and its menu), projects.yaml (the split
-#      topology), each project's project.yaml, each
-#      instance's instance.yaml (a package of the catalogs) and config.yaml; the
-#      control plane server names the sandbox's io or split topology (gitops.topology;
-#      no single repository, mono is gone; io warned of: every writer of the projects
-#      repository writes every project); flux/ and argocd/ read the output repository
-#      of the topology; the CI's topology
-#      reaches http:// on the hosts of CI_INSECURE_HTTP_HOSTS only; the connections
-#      (platform.yaml, project.yaml, connections.yaml) match their contract schema,
-#      from the contracts/ of the catalogs (one contract in two catalogs must be the
-#      same file);
+# CI check of the deployments layout (see gitops/README.md). The rules of the tree
+# (names, releases, platform.yaml, project.yaml, instance.yaml, config.yaml,
+# connections.yaml, the connections and their contracts, the claims, catalogs.yaml)
+# are okdp-compiler's and okdp-gitops': the compile (4.) reports them, this script
+# re-implements none. It checks the sandbox itself:
+#   1. the files the scripts and the engines read beside the compile parse (the
+#      server's values, catalogs.yaml, projects.yaml, platform.yaml, argocd/, flux/);
+#   2. the sandbox's files agree with its scripts: the control plane server names the
+#      sandbox's io or split topology (gitops.topology; no single repository, mono is
+#      gone; io warned of: every writer of the projects repository writes every
+#      project); flux/ and argocd/ read the output repository of the topology; the
+#      CI's workflow is written (okdp-gitops workflow --for output, which refuses an
+#      http:// host not in CI_INSECURE_HTTP_HOSTS); projects.yaml lists the projects
+#      of projects/ (split); a project of projects/ has a project.yaml (the scripts'
+#      projects); the privileged projects of platform.yaml are projects of projects/
+#      or optional/projects/ (a typo would confine the project it meant);
 #   3. the catalog sandbox-charts holds the bootstrap (bootstrap/charts.yaml, the
 #      platform's prerequisites, README step 3), which it checks itself
 #      (scripts/check-bootstrap.sh);
@@ -37,21 +38,27 @@
 #      instance compiled together with its package of the catalogs, each claim bound
 #      to its provider), into the output tree that scripts/configure.sh --push would
 #      push (a temporary directory, or --output DIR); nothing compiled is kept in the
-#      layout;
-#   5. the kustomizations of that output build (when kustomize is installed): the
+#      layout; its errors and warnings printed as the compile reports them; with
+#      --charts DIR, the compile's chart cache (okdp-gitops compile --charts DIR, which
+#      pulls the upstream charts of the compiled instances there, OCI digests
+#      verified), the values checked against each chart's defaults and schema;
+#   5. the optional projects and instances (optional/projects/) compile too, moved
+#      into projects/ (a copy of the layout), as one moves them by hand;
+#   6. the kustomizations of that output build (when kustomize is installed): the
 #      root's, compiled/projects, which Flux syncs, each project's, its manifests'
 #      (project/), each instance's;
-#   6. with --helm: every compiled instance renders with `helm template` (its umbrella
-#      chart, its dependencies from the --charts DIR cache, scripts/pull-charts.sh,
-#      else helm dependency build, with its instance.values.yaml), which also checks
-#      its values against each chart's values.schema.json.
+#   7. with --helm: every compiled instance renders with `helm template` (its umbrella
+#      chart, its dependencies fetched from their repositories by helm dependency
+#      build, with its instance.values.yaml): the charts' templates, which the
+#      compile's chart cache does not hold (Chart.yaml, values.yaml,
+#      values.schema.json only).
 # The catalogs are those of catalogs.yaml, read as scripts/compile.sh reads them
 # (--catalog NAME=SRC, OKDP_CATALOGS; default: the checkouts next to this repository
 # at the catalog's ref, else GitHub).
 #
 # Usage: check.sh [--root DIR] [--output DIR] [--catalog NAME=SRC]...
 #                 [--charts DIR] [--helm]
-# Requires bash >= 4, yq v4, jq, git, okdp-gitops (https://github.com/OKDP/okdp-gitops:
+# Requires bash >= 4, yq v4, git, okdp-gitops (https://github.com/OKDP/okdp-gitops:
 # make build; OKDP_GITOPS names it); optional: kustomize, helm.
 
 set -euo pipefail
@@ -70,113 +77,52 @@ while [[ $# -gt 0 ]]; do
     --root) ROOT="$(cd "$2" && pwd)"; shift 2 ;;
     --output) OUTPUT="$(mkdir -p "$2" && cd "$2" && pwd)"; shift 2 ;;
     --catalog) CATALOGS+=("$2"); shift 2 ;;
-    --charts) CHARTS="$(cd "$2" && pwd)"; shift 2 ;;
+    --charts) CHARTS="$(mkdir -p "$2" && cd "$2" && pwd)"; shift 2 ;;
     --helm) HELM=true; shift ;;
-    -h|--help) sed -n '18,55p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,62p' "$0"; exit 0 ;;
     *) echo "check: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 # shellcheck source=lib/topology.sh
 source "$SCRIPTS/lib/topology.sh"
+# shellcheck source=lib/forgejo.sh
+source "$SCRIPTS/lib/forgejo.sh"
 
 failures=0
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
 step() { echo "== $*"; }
-dns_label() { [[ "$1" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && ${#1} -le 63 ]]; }
-# keys FILE [PATH]: the keys of the map at PATH of FILE, joined by commas.
-keys() { yq "${2:-.} | [keys[]] | join(\",\")" "$1"; }
-# only FILE PATH ALLOWED...: fails for each key of the map at PATH not in ALLOWED.
-only() {
-  local f="$1" path="$2" k pre=""; shift 2
-  [[ "$path" == "." ]] || pre="${path#.}."
-  [[ "$(yq "$path | tag" "$f")" == "!!map" ]] || return 0
-  for k in $(yq -r "$path | keys[]" "$f"); do
-    one_of "$k" "$@" || fail "${f#"$ROOT"/}: $pre$k: unknown key (${*})"
-  done
-}
+# compile_report LOG: what the compile printed on stderr (its problems, its
+# warnings), indented.
+compile_report() { if [[ -s "$1" ]]; then sed 's/^/   /' "$1" >&2; fi; }
 
 work_init ""
 TMP="$WORK"
 OUT="${OUTPUT:-$WORK/output}"
+# The flags of each compile: the chart cache, okdp-gitops compile's own.
+COMPILE_ARGS=()
+[[ -z "$CHARTS" ]] || COMPILE_ARGS=(--charts "$CHARTS")
 
-# ------------------------------------------------------------------ 1. YAML
-step "YAML syntax"
+# --------------------------------------------------- 1. the files the scripts read
+# The scripts read these with yq, beside the compile (which reports the files of the
+# tree it reads itself): the rest of this check needs them.
+step "YAML syntax of the files the scripts and the engines read"
 while IFS= read -r f; do
+  [[ -f "$f" ]] || continue
   yq -e 'true' "$f" >/dev/null 2>&1 || [[ ! -s "$f" ]] || fail "${f#"$ROOT"/}: invalid YAML"
-done < <(find "$ROOT" -path "$ROOT/.git" -prune -o -path "$ROOT/compiled" -prune \
-  -o -type f \( -name '*.yaml' -o -name '*.yml' \) -print | sort)
+done < <({ printf '%s\n' "$SERVER_VALUES" "$CATALOG_FILE" "$PROJECTS_FILE" "$ROOT/platform.yaml"
+  find "$ROOT/argocd" "$ROOT/flux" -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | sort; })
+if (( failures > 0 )); then
+  echo "check: $failures failure(s), the files the scripts read do not parse" >&2
+  exit 1
+fi
 
 # ------------------------------------------------------------- the catalogs
 step "catalogs"
 catalog_sources_init "${CATALOGS[@]}"
 catalogs_resolve
-# Contracts: the union of the catalogs' contracts/, the same file wherever repeated.
-declare -A CONTRACTS=()
-for name in $(printf '%s\n' "${!CATALOG_DIRS[@]}" | sort); do
-  for f in "${CATALOG_DIRS[$name]}"/contracts/*.schema.json; do
-    [[ -f "$f" ]] || continue
-    c="${f##*/}"; c="${c%.schema.json}"
-    if [[ -n "${CONTRACTS[$c]:-}" ]] && ! cmp -s "${CONTRACTS[$c]}" "$f"; then
-      fail "contract $c differs between the catalogs (${CONTRACTS[$c]} and $f)"
-    fi
-    CONTRACTS[$c]="$f"
-  done
-done
-echo "   contracts: $(printf '%s\n' "${!CONTRACTS[@]}" | sort | tr '\n' ' ')"
-# catalog_package SERVICE [VERSION]: the catalog holding catalog/SERVICE[/VERSION].
-catalog_package() {
-  local name
-  for name in "${!CATALOG_DIRS[@]}"; do
-    if [[ -d "${CATALOG_DIRS[$name]}/catalog/$1${2:+/$2}" ]]; then echo "$name"; return 0; fi
-  done
-  return 1
-}
 
-# ----------------------------------------------------------------- 2. shapes
-step "platform.yaml, catalogs.yaml"
-pv="$ROOT/platform.yaml"
-if [[ ! -f "$pv" ]]; then
-  fail "platform.yaml is missing"
-else
-  only "$pv" "." global connections
-  [[ "$(yq '.global.okdp | tag' "$pv")" == "!!map" ]] || fail "platform.yaml: global.okdp is required"
-  [[ "$(yq '.global.okdp | has("certificateIssuers")' "$pv")" == "false" ]] \
-    || fail "platform.yaml: global.okdp.certificateIssuers is gone: global.okdp.tls.clusterIssuer"
-  [[ "$(yq '.global.okdp | has("serviceCatalog")' "$pv")" == "false" ]] \
-    || fail "platform.yaml: serviceCatalog belongs in catalogs.yaml"
-  # The platform's own projects: projects of the layout, or optional ones (moved into
-  # projects/ by hand); a name that is neither is a typo, which would confine the
-  # project it meant.
-  for p in $(yq -r '.global.okdp.policy.privileged[]?' "$pv"); do
-    [[ -f "$ROOT/projects/$p/project.yaml" || -f "$ROOT/optional/projects/$p/project.yaml" ]] \
-      || fail "platform.yaml: global.okdp.policy.privileged: $p is no project of projects/ or optional/projects/"
-  done
-fi
-cat="$CATALOG_FILE"
-if [[ ! -f "$cat" ]]; then
-  fail "catalogs.yaml is missing"
-else
-  only "$cat" "." repositories categories
-  [[ "$(yq '.repositories | tag' "$cat")" == "!!seq" ]] || fail "catalogs.yaml: repositories must be a list"
-  bad="$(yq '[.repositories[]? | select((.name | tag) != "!!str" or (.url | tag) != "!!str" or (.ref | tag) != "!!str")] | length' "$cat")"
-  [[ "$bad" == "0" ]] || fail "catalogs.yaml: every repository needs name, url and ref (strings)"
-  dup="$(yq -r '[.repositories[]?.name] | group_by(.) | map(select(length > 1) | .[0]) | join(" ")' "$cat")"
-  [[ -z "$dup" ]] || fail "catalogs.yaml: repositories named twice: $dup"
-  [[ "$(yq '.categories | tag' "$cat")" == "!!seq" ]] || fail "catalogs.yaml: categories must be a list"
-  bad="$(yq '[.categories[] | select((.title | tag) != "!!str" or (.services | tag) != "!!seq")] | length' "$cat")"
-  [[ "$bad" == "0" ]] || fail "catalogs.yaml: every category needs a title and a services list"
-  bad="$(yq '[.categories[].services[] | select((.name | tag) != "!!str" or has("versions") or has("repository") or (has("default") and (.default | tag) != "!!str"))] | length' "$cat")"
-  [[ "$bad" == "0" ]] || fail "catalogs.yaml: a service has a name and maybe a default version (a string); its versions are its catalog's directories"
-  while IFS=$'\t' read -r s def; do
-    if ! catalog_package "$s" >/dev/null; then
-      fail "catalogs.yaml: service $s is in no catalog"
-    elif [[ -n "$def" ]] && ! catalog_package "$s" "$def" >/dev/null; then
-      fail "catalogs.yaml: service $s has no version $def"
-    fi
-  done < <(yq -r '.categories[].services[] | [.name, .default // ""] | @tsv' "$cat")
-fi
-
+# --------------------------------------------------- 2. the sandbox's own files
 step "topology ($(topology_current))"
 topology="$(topology_current)"
 if ! one_of "$topology" "${TOPOLOGIES[@]}"; then
@@ -199,17 +145,17 @@ fi
   || fail "flux/sync.yaml: the path starts with $(entry_prefix), the output is at the root of its repository (./compiled/projects)"
 [[ "$(yq 'select(.kind == "Application") | .spec.source.repoURL' "$ROOT/argocd/root.yaml")" == "$(output_url "$topology")" ]] \
   || fail "argocd/root.yaml: its source is not the output repository (okdp-gitops writes the Applications of the instances from it)"
-for url in $(ci_http_refused "$topology" | sort -u); do
-  fail "the CI's topology: $url is http://, its host not in CI_INSECURE_HTTP_HOSTS ($CI_INSECURE_HTTP_HOSTS): okdp-gitops workflow would refuse it, the CI's token would go in clear"
-done
+# The workflow scripts/configure.sh --push installs in the output repository.
+ci_topology_file "$topology" >"$TMP/topology.ci.yaml"
+if ! forgejo_output_workflow "$TMP/ci" "$TMP/topology.ci.yaml" 2>"$TMP/.workflow.log"; then
+  compile_report "$TMP/.workflow.log"
+  fail "the CI's workflow (okdp-gitops workflow --for output, CI_INSECURE_HTTP_HOSTS=$CI_INSECURE_HTTP_HOSTS): its topology refused"
+fi
 if [[ "$topology" == split ]]; then
   if [[ ! -f "$PROJECTS_FILE" ]]; then
     fail "projects.yaml is missing (split topology: scripts/configure.sh --topology split)"
   else
     listed="$(yq -r '.projects[]?.name' "$PROJECTS_FILE" | sort)"
-    for p in $listed; do
-      dns_label "$p" || fail "projects.yaml: invalid project name '$p'"
-    done
     [[ "$listed" == "$(project_names)" ]] \
       || fail "projects.yaml lists '$(tr '\n' ' ' <<<"$listed")', projects/ holds '$(project_names | tr '\n' ' ')'"
   fi
@@ -217,108 +163,23 @@ elif [[ -f "$PROJECTS_FILE" ]]; then
   fail "projects.yaml belongs to the split topology only ($topology here)"
 fi
 
-step "projects and instances"
-# A project is a directory of projects/ with a project.yaml; its instances are its
-# directories of instances/. optional/ holds projects and instances in the same
-# layout, moved into place by hand.
-declare -A RELEASES=()
-while IFS= read -r d; do
-  rel="${d#"$ROOT"/}"; p="${d##*/}"
-  dns_label "$p" || fail "$rel: a project's name is a DNS label"
-  if [[ "$rel" != optional/* || -f "$d/project.yaml" ]]; then
-    [[ -f "$d/project.yaml" ]] || fail "$rel: project.yaml is missing (a project is a directory with a project.yaml)"
-    only "$d/project.yaml" "." description global connections claims
-    [[ "$(yq '.description | tag' "$d/project.yaml")" =~ ^!!(str|null)$ ]] \
-      || fail "$rel/project.yaml: description is a string, the project's (quote one that holds \": \")"
-  fi
-  for i in "$d"/instances/*/; do
-    [[ -d "$i" ]] || continue
-    i="${i%/}"; irel="${i#"$ROOT"/}"; n="${i##*/}"
-    dns_label "$n" || fail "$irel: an instance's name is a DNS label"
-    r="$p-$n"
-    (( ${#r} <= 53 )) || fail "$irel: its release $r is longer than 53 characters"
-    if [[ "$rel" != optional/* ]]; then
-      [[ -z "${RELEASES[$r]:-}" ]] || fail "$irel: its release $r is also ${RELEASES[$r]}'s"
-      RELEASES[$r]="$irel"
-    fi
-    f="$i/instance.yaml"
-    if [[ ! -f "$f" ]]; then fail "$irel: instance.yaml is missing"; continue; fi
-    case "$(yq '[keys[]] | sort | join(",")' "$f")" in
-      service,version|claimers,service,version) ;;
-      *) fail "$irel/instance.yaml: the keys are service and version, and claimers for a provider, nothing else" ;;
-    esac
-    # A provider's consent: the namespaces that may claim of it, or "*".
-    if [[ "$(yq 'has("claimers")' "$f")" == true ]]; then
-      if [[ "$(yq '.claimers | tag' "$f")" != "!!seq" ]]; then
-        fail "$irel/instance.yaml: claimers is a list of namespaces, or [\"*\"]"
-      else
-        while IFS= read -r c; do
-          [[ "$c" == "*" ]] || dns_label "$c" || fail "$irel/instance.yaml: claimers: '$c' is not a namespace name, nor \"*\""
-        done < <(yq -r '.claimers[]' "$f")
-      fi
-    fi
-    [[ "$(yq '.service | tag' "$f")" == "!!str" && "$(yq '.version | tag' "$f")" == "!!str" ]] \
-      || fail "$irel/instance.yaml: service and version are strings (quote a version such as \"6.10\")"
-    service="$(yq '.service' "$f")"; version="$(yq '.version' "$f")"
-    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][-0-9A-Za-z.]*)?$ ]] || fail "$irel/instance.yaml: version $version is not an exact version"
-    if [[ ${#CATALOG_DIRS[@]} -gt 0 ]] && ! catalog_package "$service" "$version" >/dev/null; then
-      fail "$irel/instance.yaml: no package $service $version in the catalogs (catalog/$service/$version/)"
-    fi
-    if [[ -f "$i/config.yaml" ]]; then
-      for k in global connections claims; do
-        [[ "$(yq "has(\"$k\")" "$i/config.yaml")" == false ]] \
-          || fail "$irel/config.yaml: $k is the context's (platform.yaml, project.yaml, connections.yaml), not an instance value"
-      done
-    fi
-    if [[ -f "$i/connections.yaml" ]]; then only "$i/connections.yaml" "." connections; fi
-    for x in "$i"/*; do
-      case "${x##*/}" in
-        instance.yaml|config.yaml|connections.yaml) ;;
-        *) fail "$irel: ${x##*/}: not a file of an instance (instance.yaml, config.yaml, connections.yaml)" ;;
-      esac
-    done
+step "projects"
+# The scripts take a project for a directory of projects/ with a project.yaml
+# (project_names: projects.yaml, the repositories of split).
+for d in "$ROOT"/projects/*/; do
+  [[ -d "$d" ]] || continue
+  [[ -f "$d/project.yaml" ]] \
+    || fail "projects/$(basename "$d"): project.yaml is missing (the scripts' projects are the directories with one: projects.yaml, the repositories of split)"
+done
+# The platform's own projects: projects of the layout, or optional ones (moved into
+# projects/ by hand); a name that is neither is a typo, which would confine the
+# project it meant.
+if [[ -f "$ROOT/platform.yaml" ]]; then
+  for p in $(yq -r '.global.okdp.policy.privileged[]?' "$ROOT/platform.yaml"); do
+    [[ -f "$ROOT/projects/$p/project.yaml" || -f "$ROOT/optional/projects/$p/project.yaml" ]] \
+      || fail "platform.yaml: global.okdp.policy.privileged: $p is no project of projects/ or optional/projects/"
   done
-done < <(find "$ROOT/projects" "$ROOT/optional/projects" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
-
-step "connections (platform.yaml, project.yaml, connections.yaml)"
-# check_connection FILE NAME: the connection connections.NAME of FILE against its
-# contract: its fields known (description aside), no secret field, the required
-# non-secret ones present, its credentials a Secret (secretRef.name) or a key of the
-# platform's secret store (secretRef.remoteKey) when the contract has secret fields.
-check_connection() {
-  local f="$1" c="$2" rel contract schema fields problems m
-  rel="${f#"$ROOT"/}: connections.$c"
-  dns_label "$c" || fail "$rel: a connection's name is a DNS label"
-  contract="$(yq ".connections[\"$c\"].contract" "$f")"
-  schema="${CONTRACTS[$contract]:-}"
-  [[ -n "$schema" ]] || { fail "$rel: contract '$contract' is in no catalog's contracts/"; return; }
-  if [[ "$(jq '[.properties[]? | select(.["x-okdp-secret"] == true)] | length' "$schema")" != "0" ]]; then
-    case "$(yq ".connections[\"$c\"].secretRef | [(.name | tag), (.remoteKey | tag)] | join(\",\")" "$f")" in
-      '!!str,!!null'|'!!null,!!str') ;;
-      *) fail "$rel: secretRef: name (a Secret of the namespace) or remoteKey (a key of the platform's secret store), one of them" ;;
-    esac
-    if [[ "$(yq ".connections[\"$c\"].secretRef | has(\"remoteKey\")" "$f")" == true \
-      && "$(yq '.global.okdp.secrets.store // ""' "$pv")" == "" ]]; then
-      fail "$rel: secretRef.remoteKey: the platform names no secret store (global.okdp.secrets.store)"
-    fi
-  fi
-  fields="$(yq -o=json ".connections[\"$c\"] | del(.contract) | del(.description) | del(.secretRef)" "$f")"
-  problems="$(jq -rn --argjson v "$fields" --slurpfile s "$schema" '
-    ($s[0].properties // {}) as $props
-    | [ ($v | keys[]) as $k
-        | if ($props | has($k)) | not then "unknown field \($k)"
-          elif $props[$k]["x-okdp-secret"] == true then "secret field \($k) must be in the Secret, not here"
-          else empty end ]
-      + [ ($s[0].required // [])[] as $r
-          | select(($props[$r]["x-okdp-secret"] // false) == false)
-          | select(($v | has($r)) | not) | "missing required field \($r)" ]
-    | .[]')"
-  while IFS= read -r m; do [[ -z "$m" ]] || fail "$rel: $m"; done <<<"$problems"
-}
-while IFS= read -r f; do
-  [[ "$(yq '.connections | tag' "$f")" == "!!map" ]] || continue
-  for c in $(yq -r '.connections | keys[]' "$f"); do check_connection "$f" "$c"; done
-done < <({ echo "$pv"; find "$ROOT/projects" "$ROOT/optional/projects" \( -name project.yaml -o -name connections.yaml \) 2>/dev/null | sort; })
+fi
 
 # -------------------------------------------------------------- 3. bootstrap
 # The bootstrap is the catalog sandbox-charts' (bootstrap/), checked there
@@ -331,19 +192,48 @@ elif [[ ! -f "${CATALOG_DIRS[$BOOTSTRAP_CATALOG]}/bootstrap/charts.yaml" ]]; the
 fi
 
 # ------------------------------------------------------------- 4. compile
-step "the tree compiles (okdp-gitops compile, into ${OUTPUT:-a temporary output tree})"
+step "the tree compiles (okdp-gitops compile, into ${OUTPUT:-a temporary output tree}${CHARTS:+, the charts cached in $CHARTS})"
 compiled=false
 if ! command -v "${OKDP_GITOPS:-okdp-gitops}" >/dev/null; then
   fail "okdp-gitops is required (https://github.com/OKDP/okdp-gitops: make build; or set OKDP_GITOPS)"
-elif ! layout_compile "$OUT" >"$TMP/.compile.log" 2>&1; then
-  sed 's/^/   /' "$TMP/.compile.log"
-  fail "the tree does not compile"
+elif ! layout_compile "$OUT" "${COMPILE_ARGS[@]}" >"$TMP/.compile.out" 2>"$TMP/.compile.log"; then
+  compile_report "$TMP/.compile.log"
+  fail "the tree does not compile (okdp-gitops compile, above)"
 else
   compiled=true
+  compile_report "$TMP/.compile.log"
   echo "   $(find "$OUT/compiled" -type f | wc -l) files in compiled/"
 fi
 
-# ------------------------------------------------------------ 5. kustomize
+# --------------------------------------------------- 5. the optional projects
+# optional/projects/ holds projects and instances in the layout of projects/, moved
+# into place by hand: a copy of the layout with them moved compiles too.
+if [[ -d "$ROOT/optional/projects" ]]; then
+  if ! $compiled; then
+    step "the optional projects compile: skipped (the tree does not compile)"
+  else
+    step "the optional projects compile, moved into projects/ (a copy of the layout)"
+    opt="$TMP/with-optional"
+    rm -rf "$opt"; cp -R "$ROOT" "$opt"; rm -rf "$opt/optional" "$opt/.git"
+    while IFS= read -r f; do
+      rel="${f#"$ROOT"/optional/}"
+      if [[ -e "$opt/$rel" ]]; then
+        fail "optional/$rel: $rel exists, the optional file cannot be moved into place"
+        continue
+      fi
+      mkdir -p "$(dirname "$opt/$rel")"; cp "$f" "$opt/$rel"
+    done < <(find "$ROOT/optional/projects" -type f | sort)
+    if ! ROOT="$opt" layout_compile "$TMP/with-optional.output" "${COMPILE_ARGS[@]}" >"$TMP/.optional.out" 2>"$TMP/.optional.log"; then
+      compile_report "$TMP/.optional.log"
+      fail "the tree with optional/projects/ moved into projects/ does not compile (okdp-gitops compile, above)"
+    else
+      compile_report "$TMP/.optional.log"
+      echo "   $(find "$ROOT/optional/projects" -path '*/instances/*/instance.yaml' | wc -l) optional instances"
+    fi
+  fi
+fi
+
+# ------------------------------------------------------------ 6. kustomize
 if ! $compiled; then
   step "kustomize build: skipped (nothing compiled)"
 elif command -v kustomize >/dev/null; then
@@ -361,14 +251,7 @@ else
   step "kustomize build: skipped (kustomize not installed)"
 fi
 
-# ----------------------------------------------------------------- 6. helm
-# cached REPOSITORY NAME VERSION: the chart in the --charts cache (the layout of
-# okdp-compiler's chart cache: <repository without scheme>/<name>-<version>/<name>).
-cached() {
-  local d="$CHARTS/${1#*://}"; d="${d%/}/$2-$3/$2"
-  [[ -n "$CHARTS" && -f "$d/Chart.yaml" ]] && echo "$d"
-}
-
+# ----------------------------------------------------------------- 7. helm
 if $HELM; then
   command -v helm >/dev/null || fail "--helm needs helm"
 fi
@@ -383,22 +266,11 @@ elif $HELM; then
       fail "helm template $rel: no compiled umbrella chart (compiled/projects/$p/instances/$r/Chart.yaml)"
       continue
     fi
-    # The umbrella, its dependencies from the cache or their repositories.
+    # The umbrella, its dependencies fetched from their repositories.
     chart="$TMP/umbrella/$r"
     rm -rf "$chart"; mkdir -p "$chart"; cp -R "$out/." "$chart"; rm -rf "$chart/charts" "$chart/Chart.lock"
-    missing=false
-    while IFS=$'\t' read -r repo dep version; do
-      if src="$(cached "$repo" "$dep" "$version")"; then
-        mkdir -p "$chart/charts"; rm -rf "$chart/charts/$dep-$version"; cp -R "$src" "$chart/charts/$dep-$version"
-      else
-        missing=true
-      fi
-    done < <(yq -r '.dependencies[]? | [.repository, .name, .version] | @tsv' "$out/Chart.yaml")
-    if $missing; then
-      rm -rf "$chart/charts"
-      helm dependency build "$chart" >"$TMP/.helm.log" 2>&1 \
-        || { fail "helm dependency build $rel"; grep -v 'failed to load plugins' "$TMP/.helm.log" | sed 's/^/   /'; continue; }
-    fi
+    helm dependency build "$chart" >"$TMP/.helm.log" 2>&1 \
+      || { fail "helm dependency build $rel"; grep -v 'failed to load plugins' "$TMP/.helm.log" | sed 's/^/   /'; continue; }
     if helm template "$r" "$chart" -n "$p" -f "$out/instance.values.yaml" >"$TMP/.helm.out" 2>"$TMP/.helm.log"; then
       echo "   ok $rel ($(grep -c '^kind:' "$TMP/.helm.out") objects)"
     else

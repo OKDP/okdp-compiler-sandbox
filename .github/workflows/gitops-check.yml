@@ -15,20 +15,23 @@
 #
 
 
-# Checks the deployments repository layout (gitops/): shapes, connection contracts,
-# the layout compiles (okdp-gitops compile: every instance compiled with its package
-# of the service catalogs, its values checked against the upstream charts) into the
-# output tree scripts/configure.sh --push would push (never committed here),
-# kustomize builds, helm template of every compiled instance; in the committed
-# topology (io), then in split (a copy configured for it). The bootstrap (the
-# platform's prerequisites) is sandbox-charts' bootstrap/, checked there.
+# Checks the deployments repository layout (gitops/): the sandbox's own files (its
+# topology, entry points, the CI's workflow), the layout compiles (okdp-gitops
+# compile, the only source of the tree's rules: every instance compiled with its
+# package of the service catalogs, its values checked against the upstream charts)
+# into the output tree scripts/configure.sh --push would push (never committed
+# here), the optional projects too, kustomize builds, helm template of every
+# compiled instance; in the committed topology (io), then in split (a copy configured
+# for it). The bootstrap (the platform's prerequisites) is sandbox-charts'
+# bootstrap/, checked there.
 #
 # okdp-gitops is built from its repository, with okdp-compiler next to it (its go.mod
 # replaces it). The service catalogs of gitops/catalogs.yaml
 # (platform-charts, sandbox-charts, community-charts) are cloned next to this
-# repository at the ref the catalog names, where scripts/check.sh reads them. The upstream charts of
-# the compiled umbrellas fill a chart cache (scripts/pull-charts.sh, from a first
-# compile): nothing OKDP is pulled from a registry.
+# repository at the ref the catalog names, where scripts/check.sh reads them. The
+# compile pulls the upstream charts of the compiled umbrellas into its chart cache
+# (okdp-gitops compile --charts, scripts/check.sh --charts), helm the charts it
+# renders (helm dependency build): nothing OKDP is pulled from a registry.
 
 name: GitOps layout check
 
@@ -107,12 +110,6 @@ jobs:
         with:
           version: ${{ env.HELM_VERSION }}
 
-      - name: Fill the chart cache with the upstream charts 📥
-        run: |
-          set -euo pipefail
-          scripts/compile.sh --output "${RUNNER_TEMP}/output"
-          scripts/pull-charts.sh --output "${RUNNER_TEMP}/output" "${RUNNER_TEMP}/charts"
-
       - name: Set up kustomize 🛠️
         run: |
           set -euo pipefail
@@ -125,8 +122,8 @@ jobs:
           kustomize version; helm version
 
       - name: Check the layout ✅
-        # yq v4 and jq are preinstalled on ubuntu-latest.
-        run: scripts/check.sh --output "${RUNNER_TEMP}/output" --charts "${RUNNER_TEMP}/charts" --helm
+        # yq v4 is preinstalled on ubuntu-latest. The compile fills the chart cache.
+        run: scripts/check.sh --charts "${RUNNER_TEMP}/charts" --helm
 
       - name: Check the layout in the split topology ✅
         # A copy of the layout, configured for split (the committed one is io): the
@@ -135,4 +132,4 @@ jobs:
           set -euo pipefail
           cp -R gitops "${RUNNER_TEMP}/split"
           scripts/configure.sh --root "${RUNNER_TEMP}/split" --topology split </dev/null
-          scripts/check.sh --root "${RUNNER_TEMP}/split"
+          scripts/check.sh --root "${RUNNER_TEMP}/split" --charts "${RUNNER_TEMP}/charts"

@@ -414,7 +414,8 @@ only and read access to the catalogs; it writes its password, random, to Secret
 the runner holds no git credentials; the token goes in clear, over `http://`, to the
 cluster's services only: the workflow carries
 `GITOPS_INSECURE_HTTP_HOSTS='*.svc.cluster.local'`, `CI_INSECURE_HTTP_HOSTS` of
-`scripts/lib/topology.sh`, which `scripts/check.sh` checks the topology against), and
+`scripts/lib/topology.sh`, with which `scripts/check.sh` has `okdp-gitops workflow`
+write the CI's workflow, refused for another `http://` host), and
 the runner's registration secret to `forgejo/okdp-runner-registration`, nowhere else.
 The output repository's `main` is protected: `okdp-gitops` alone pushes there (its
 push whitelist), never the admin nor a person, no force push; the script pushes the
