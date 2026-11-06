@@ -66,10 +66,14 @@ global:
       displayName: keycloak
       scope: "openid profile email groups"
       usePKCE: true
-      # Self-signed sandbox certificate the server pod does not carry a CA for.
-      # SANDBOX ONLY: disables TLS verification of the OIDC provider. Must be false in
-      # production (give the pods the CA bundle instead, e.g. trust-manager's certs-bundle).
-      insecureSkipVerify: true
+      # The issuer's certificate is checked: Keycloak's, of the cluster issuer
+      # default-issuer, against the platform's CA bundle (tls.caBundleSecret below,
+      # certs-bundle, key ca.crt), which the services mount (their packages, when
+      # caBundleSecret is set), Forgejo (SSL_CERT_DIR, sandbox-charts'
+      # bootstrap/forgejo) and Argo CD (rootCA of its oidc.config, README step 5a)
+      # trust. true would take any certificate, a forged issuer's too (a token of
+      # platform_admin): never.
+      insecureSkipVerify: false
       clientProvisioning: dcr
       dcr:
         registrationUrl: https://keycloak.okdp.sandbox/realms/okdp/clients-registrations/openid-connect
@@ -146,20 +150,33 @@ global:
     # Without provider, store is a ClusterSecretStore the platform created: one
     # identity for every namespace, one trust domain. The refresh interval of the
     # ExternalSecrets and PushSecrets is the compiler's default (refreshInterval, 1h).
+    # OpenBao over https only, its certificate of the cluster issuer (tls.clusterIssuer)
+    # checked against the platform's CA bundle (caProvider: the Secret
+    # tls.caBundleSecret, key ca.crt, of the store's own namespace, where
+    # trust-manager writes it); the store signs in with a token of the namespace's
+    # ServiceAccount of the audience openbao (audiences), which OpenBao's role okdp
+    # requires (its audience): a token of the API server's audience is refused there,
+    # and the token sent to OpenBao is no credential of the API server. External
+    # Secrets' API external-secrets.io/v1 (the bootstrap's External Secrets 2.11).
     secrets:
       store: okdp-secrets
       serviceAccount: okdp-secrets
       provider:
         vault:
-          server: http://openbao.openbao.svc.cluster.local:8200
+          server: https://openbao.openbao.svc.cluster.local:8200
           path: okdp
           version: v2
+          caProvider:
+            type: Secret
+            name: certs-bundle
+            key: ca.crt
           auth:
             kubernetes:
               mountPath: kubernetes
               role: okdp
               serviceAccountRef:
                 name: okdp-secrets
+                audiences: [openbao]
 
     # Who administers the platform, and the people of the projects: Keycloak's groups
     # (sandbox-charts' bootstrap/keycloak/realm.yaml), as the tokens' groups claim

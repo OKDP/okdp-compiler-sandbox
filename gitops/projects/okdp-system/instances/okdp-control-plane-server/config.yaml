@@ -30,16 +30,33 @@ gitops:
   credentialsSecret: okdp-console-git
   # The upstream charts of the instances, pulled for the checks of each compile.
   chartCacheDir: /var/cache/okdp/charts
+  # The hosts the server sends a credential to over http://, in clear
+  # (GITOPS_INSECURE_HTTP_HOSTS; every other http:// URL is refused one): the
+  # in-cluster Forgejo of the topology and of the catalogs, its exact host, never a
+  # glob such as *.svc.cluster.local, which would trust every Service of the
+  # cluster (check.sh refuses one); as the CI's (CI_INSECURE_HTTP_HOSTS,
+  # scripts/lib/topology.sh). Without it the console reaches no repository.
+  insecureHTTPHosts:
+    - forgejo-http.forgejo.svc.cluster.local
+# The CA bundle every TLS client of the server trusts beside the system's (the
+# OIDC issuer, Keycloak, Trino, the SQL editor and the connection tests, Git),
+# mounted at /etc/okdp/ca (OKDP_CA_FILE): the platform's (platform.yaml
+# global.okdp.tls.caBundleSecret, key ca.crt), which trust-manager writes in every
+# namespace, the sandbox CA's certificates of default-issuer. The callers' groups
+# are the tokens' claim groups, the server's default (oidc.groupsClaim), as the
+# realm okdp's mapper writes them.
+tls:
+  caBundleSecret: certs-bundle
 # User and group management through the Keycloak Admin API (URL and realm from the
 # platform OIDC issuer), as the realm's client okdp-control-plane, its credentials the
 # Secret okdp-system/local-secrets-provider reads from the platform's secret store
 # (okdp-system/keycloak/okdp-control-plane, written at the bootstrap, which only
-# okdp-system reads). Self-signed sandbox
-# certificate.
+# okdp-system reads). Keycloak's certificate is checked (no tlsInsecure), as the
+# issuer's (platform.yaml global.okdp.oidc.insecureSkipVerify false), against the
+# CA bundle above.
 keycloak:
   credentialsSecret:
     name: okdp-control-plane-keycloak
-  tlsInsecure: true
 # TODO(okdp-compiler): temporary registry, revert to quay.io/okdp once the OKDP images are published there.
 # TODO(okdp-compiler): the image must be a server that compiles the instances it
 # writes (okdp-control-plane-server, okdp-compiler branch): none is published yet;

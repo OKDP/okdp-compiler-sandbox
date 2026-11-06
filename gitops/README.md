@@ -187,7 +187,11 @@ repository's, and the control plane, when installed, writes the sources only, as
   `okdp-gitops compile --config <file>` reads the same file (a `url` may also be a
   local directory, read and written in place); `platform.path` is the directory of
   `platform.yaml`. okdp-gitops refuses a topology whose output is a repository of the
-  sources.
+  sources. The server sends its credentials over `http://` to the in-cluster
+  Forgejo's exact host only (`gitops.insecureHTTPHosts`, as the CI's
+  `CI_INSECURE_HTTP_HOSTS`; every other `http://` URL gets none) and trusts the
+  platform's CA bundle beside the system's (`tls.caBundleSecret: certs-bundle`,
+  `OKDP_CA_FILE`), for the issuer, Keycloak, Trino and the databases.
 - A change, the console's or a person's, is a commit of the tree (platform or project
   repository); the next run of the CI of the output repository, every 2 minutes,
   compiles it into the output repository (`okdp: compile`, from the latest tree of
@@ -242,7 +246,7 @@ and the console read the catalogs as `okdp-ci` and `okdp-console`), copies the
 |---|---|---|
 | tree | `platform.yaml`, `catalogs.yaml` to `okdp-platform`, `projects/` to `okdp-projects` | `platform.yaml`, `catalogs.yaml`, `projects.yaml` to `okdp-platform`, `projects/<p>/` to `okdp-project-<p>` (each project of `projects.yaml`) |
 | output | `compiled/`, `argocd/` to `okdp-output` | the same |
-| CI | in the output repository only: `.forgejo/workflows/okdp-gitops.yaml` (`GITOPS_INSECURE_HTTP_HOSTS='*.svc.cluster.local' okdp-gitops workflow --for output --config <topology>`: every 2 minutes and on dispatch, the topology in it, the token sent over `http://` to the cluster's services only, which the job's environment allows), its Actions enabled, its Actions secret `OKDP_GITOPS_TOKEN` a token of the user `okdp-gitops` (`write:repository`), the only token of the CI; the runner `okdp-gitops` registered for it only, never a repository of the sources nor the organization (`forgejo forgejo-cli actions register --scope okdp/<output>`, a random secret, kept in Secret `forgejo/okdp-runner-registration`, key `<output>`); its `main` protected, `okdp-gitops` alone pushing there (push whitelist), no force push. The repositories of the sources: no workflow, no secret (an older sandbox's deleted), Actions off | the same |
+| CI | in the output repository only: `.forgejo/workflows/okdp-gitops.yaml` (`GITOPS_INSECURE_HTTP_HOSTS=forgejo-http.forgejo.svc.cluster.local okdp-gitops workflow --for output --config <topology>`: every 2 minutes and on dispatch, the topology in it, the token sent over `http://` to the in-cluster Forgejo only, its exact host, which the job's environment allows), its Actions enabled, its Actions secret `OKDP_GITOPS_TOKEN` a token of the user `okdp-ci` (`write:repository`), the only token of the CI; the runner `okdp-gitops` registered for it only, never a repository of the sources nor the organization (`forgejo forgejo-cli actions register --scope okdp/<output>`, a random secret, kept in Secret `forgejo/okdp-runner-registration`, key `<output>`); its `main` protected, `okdp-ci` alone pushing there (push whitelist), no force push. The repositories of the sources: no workflow, no secret (an older sandbox's deleted), Actions off | the same |
 | CI | the user `okdp-ci`, not an admin: team `okdp-ci` writes `okdp-output` (the only account its `main` takes), team `okdp-ci-read` reads `okdp-platform`, `okdp-projects` and the catalogs; its token (`write:repository`) the output repository's `OKDP_GITOPS_TOKEN` | team `okdp-ci-read` reads every repository of `okdp`: a project's repository the console creates is read at the next run |
 | engines | the user `okdp-reader`, not an admin: team `okdp-reader` reads `okdp-output` only; its token (`read:repository`) in Secrets `argocd/okdp-gitops-reader` (an Argo CD repository credential of the output's exact URL, not a template of the host) and `flux-system/okdp-gitops-reader` | the same |
 | console | the user `okdp-console`, not an admin, when the layout installs the control plane (else deleted): team `okdp-console` writes `okdp-platform` and `okdp-projects`, team `okdp-console-read` reads `okdp-output` and the catalogs; its token (`write:repository`) in Secret `okdp-system/okdp-console-git` (`gitops.credentialsSecret`, user name and token: no password) | the same, writing `okdp-platform` and the `okdp-project-<p>`, allowed to create repositories, and a token (`write:organization`) in Secret `okdp-system/okdp-forgejo-token` (key `token`) |
@@ -316,7 +320,9 @@ project and no instance may change. `global.okdp`, the platform's settings: the
 ingress (`ingress.suffix`, `ingress.className`), TLS (`tls.clusterIssuer`, the
 cert-manager ClusterIssuer of the services' certificates; `tls.caBundleSecret`, the
 Secret of the platform's CA bundle the services mount), the OIDC provider (`oidc`, the
-Keycloak of the bootstrap), the proxy, the storage classes, the classes of the claims
+Keycloak of the bootstrap, its certificate checked against that bundle by every
+client, `insecureSkipVerify: false`: the services, Forgejo, Argo CD's `rootCA`, the
+console), the proxy, the storage classes, the classes of the claims
 (`provisioning`, [Claims](#claims)) and the platform's secret store (`secrets`:
 `store`, the name of the SecretStore the compiler writes in each project's namespace,
 `provider`, External Secrets' provider of it, the OpenBao of the bootstrap, and
@@ -473,7 +479,10 @@ platform's class `standard`: no provider lists claimers. The provider is of anot
 namespace than its claimers: the credentials of a claim cross through the platform's
 secret store,
 `global.okdp.secrets` (OpenBao of the bootstrap, reached through the SecretStore
-`okdp-secrets` the compiler writes in each namespace), a `PushSecret` of the provider
+`okdp-secrets` the compiler writes in each namespace: over https, its certificate
+checked against the namespace's `certs-bundle`, `caProvider`, the namespace's
+ServiceAccount signing in with a token of the audience `openbao`, which OpenBao's
+role `okdp` requires), a `PushSecret` of the provider
 and an `ExternalSecret` of the claimer, both written by the compiler, under the key
 `<provider's namespace>/<claim ID>` (`cnpg-system/demo.hive.db`). OpenBao's policy,
 templated on the namespace that signs in ([`bootstrap/openbao/init.sh`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/openbao/init.sh)),
@@ -755,7 +764,7 @@ scripts/lib/                      # shared by the scripts (topology, catalogs, F
   [--force] [--sign-in] [--dry-run]` then compiles the committed layout and puts it, its CI (the
   output repository's workflow, on a schedule, and its topology, the token
   `OKDP_GITOPS_TOKEN` of the output repository only, over `http://` to the hosts of
-  `CI_INSECURE_HTTP_HOSTS` only, `*.svc.cluster.local`) and the catalogs on the
+  `CI_INSECURE_HTTP_HOSTS` only, `forgejo-http.forgejo.svc.cluster.local`) and the catalogs on the
   sandbox's Forgejo, the CI runner registered for the output repository only, its
   `main` pushed by `okdp-ci` alone, the engines reading it as `okdp-reader`, the
   console writing the sources as `okdp-console`, the people's teams from their
@@ -776,7 +785,12 @@ scripts/lib/                      # shared by the scripts (topology, catalogs, F
   re-implements none. It checks the sandbox's own files: the files the scripts and
   the engines read parse (the server's values, `catalogs.yaml`, `projects.yaml`,
   `platform.yaml`, `argocd/`, `flux/`), the server's topology is the sandbox's,
-  `argocd/` and `flux/` read its output repository, the CI's workflow is written
+  `argocd/` and `flux/` read its output repository, the OIDC provider's certificate
+  is checked (`oidc.insecureSkipVerify`, Argo CD's
+  `oidc.tls.insecure.skip.verify`, the console's `keycloak.tlsInsecure` false), the
+  secret store's provider is `https://`, its CA and its tokens' audience given, the
+  console's `gitops.insecureHTTPHosts` names exact hosts, the CI's workflow is
+  written
   (`okdp-gitops workflow --for output`, which refuses an `http://` host outside
   `CI_INSECURE_HTTP_HOSTS`), `projects.yaml` lists the projects (split), each
   project has a `project.yaml`, the privileged projects of `platform.yaml` are
@@ -784,7 +798,8 @@ scripts/lib/                      # shared by the scripts (topology, catalogs, F
   bootstrap (`bootstrap/charts.yaml`, which sandbox-charts checks itself:
   `scripts/check-bootstrap.sh`). Then the tree compiles (into a temporary output
   tree, or `--output DIR`; its errors and warnings printed as the compile reports
-  them; `--charts DIR`, the compile's chart cache, `okdp-gitops compile --charts
+  them; the control plane's ServiceAccount of `platform.yaml` one that its
+  namespace's instances render; `--charts DIR`, the compile's chart cache, `okdp-gitops compile --charts
   DIR`, which pulls the upstream charts there and checks the values against them),
   the optional projects too, moved into `projects/` (a copy of the layout), and
   `kustomize build` of every kustomization of that output; `--helm` also runs `helm

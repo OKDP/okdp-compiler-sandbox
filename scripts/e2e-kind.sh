@@ -218,10 +218,17 @@ if [[ "$ENGINE" == argocd ]]; then
   kubectl apply -n argocd --server-side --force-conflicts \
     -f "https://raw.githubusercontent.com/argoproj/argo-cd/$ARGOCD_VERSION/manifests/install.yaml"
   # The health of Applications: the sync waves of the apps of apps (layer ordering);
-  # the sign-in with Keycloak and its roles.
-  kubectl -n argocd patch configmap argocd-cm --type merge --patch-file "$G/argocd/bootstrap/argocd-cm-patch.yaml"
+  # the sign-in with Keycloak and its roles, Keycloak's certificate checked against the
+  # platform's CA bundle (Secret certs-bundle of the namespace, trust-manager's): rootCA
+  # of oidc.config, added to the patch (README, step 5a).
+  certs_bundle() { kubectl -n argocd get secret certs-bundle >/dev/null 2>&1; }
+  wait_for "Secret argocd/certs-bundle" certs_bundle
+  kubectl -n argocd get secret certs-bundle -o jsonpath='{.data.ca\.crt}' | base64 -d >"$E2E_DIR/argocd-ca.crt"
+  CA_FILE="$E2E_DIR/argocd-ca.crt" yq '.data["oidc.config"] |= (from_yaml | .rootCA = load_str(strenv(CA_FILE)) | to_yaml)' \
+    "$G/argocd/bootstrap/argocd-cm-patch.yaml" \
+    | kubectl -n argocd patch configmap argocd-cm --type merge --patch-file /dev/stdin
   kubectl -n argocd patch configmap argocd-rbac-cm --type merge --patch-file "$G/argocd/bootstrap/argocd-rbac-cm-patch.yaml"
-  # argocd-server reads the OIDC TLS setting at startup only.
+  # argocd-server reads the OIDC settings at startup only.
   kubectl -n argocd rollout restart deployment argocd-server
   kubectl -n argocd rollout status deployment --timeout=10m
   kubectl -n argocd rollout status statefulset --timeout=10m

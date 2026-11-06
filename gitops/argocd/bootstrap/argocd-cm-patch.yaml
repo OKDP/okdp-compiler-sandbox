@@ -25,12 +25,16 @@
 # Applications by default).
 # Sign-in with Keycloak: the public client argocd of the realm okdp (sandbox-charts'
 # bootstrap/keycloak/realm.yaml; master is Keycloak's administrators' only), the PKCE flow
-# of the UI and of argocd login --sso, no client secret. The issuer's certificate is not
-# checked: the sandbox CA does not exist yet when this patch is applied (as the control
-# plane server's oidc.insecureSkipVerify); argocd-server reads that setting at startup
-# only, restart it after the patch (kubectl -n argocd rollout restart deployment
-# argocd-server). The groups claim (the realm roles) gives the Argo CD role,
-# argocd-rbac-cm-patch.yaml. The local admin stays.
+# of the UI and of argocd login --sso, no client secret. The issuer's certificate is
+# checked (oidc.tls.insecure.skip.verify "false") against rootCA of oidc.config, Argo
+# CD's own setting of the OIDC provider's CA (the argocd-tls-certs-cm ConfigMap is the
+# repositories' only): the platform's CA bundle, Secret certs-bundle key ca.crt of the
+# namespace argocd (trust-manager's, sandbox-charts' bootstrap/trust-manager), which
+# does not exist when this file is written, hence not here: the README's step 5a adds
+# it to this patch as it applies it (yq, rootCA = the bundle), again after a rotation
+# of the CA. argocd-server reads these settings at startup only, restart it after the
+# patch (kubectl -n argocd rollout restart deployment argocd-server). The groups claim
+# gives the Argo CD role, argocd-rbac-cm-patch.yaml. The local admin stays.
 data:
   url: https://argocd.okdp.sandbox
   oidc.config: |
@@ -39,7 +43,7 @@ data:
     clientID: argocd
     enablePKCEAuthentication: true
     requestedScopes: ["openid", "profile", "email", "groups"]
-  oidc.tls.insecure.skip.verify: "true"
+  oidc.tls.insecure.skip.verify: "false"
   resource.customizations.health.argoproj.io_Application: |
     hs = {}
     hs.status = "Progressing"

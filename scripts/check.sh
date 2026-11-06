@@ -28,7 +28,13 @@
 #      project); flux/ and argocd/ read the output repository of the topology (the
 #      AppProjects too; the app of apps of the instances writes Applications in
 #      argocd only, its AppProject okdp.instances; Argo CD's admins are the
-#      administrators' groups of platform.yaml, no default role); the
+#      administrators' groups of platform.yaml, no default role); the OIDC
+#      provider's certificate is checked (platform.yaml oidc.insecureSkipVerify,
+#      Argo CD's oidc.tls.insecure.skip.verify, the console's keycloak.tlsInsecure
+#      false); the secret store's provider is https, its CA given, its tokens of an
+#      audience of their own (audiences); the console's gitops.insecureHTTPHosts and
+#      the CI's CI_INSECURE_HTTP_HOSTS name exact hosts, no glob (the CI's warned
+#      of); the
 #      CI's workflow is written (okdp-gitops workflow --for output, which refuses an
 #      http:// host not in CI_INSECURE_HTTP_HOSTS); projects.yaml lists the projects
 #      of projects/ (split); a project of projects/ has a project.yaml (the scripts'
@@ -40,7 +46,9 @@
 #   4. the tree compiles (as scripts/compile.sh does: okdp-gitops compile, every
 #      instance compiled together with its package of the catalogs, each claim bound
 #      to its provider), into the output tree that scripts/configure.sh --push would
-#      push (a temporary directory, or --output DIR); nothing compiled is kept in the
+#      push (a temporary directory, or --output DIR), the control plane's
+#      ServiceAccount of platform.yaml one its namespace's instances render; nothing
+#      compiled is kept in the
 #      layout; its errors and warnings printed as the compile reports them; with
 #      --charts DIR, the compile's chart cache (okdp-gitops compile --charts DIR, which
 #      pulls the upstream charts of the compiled instances there, OCI digests
@@ -82,7 +90,7 @@ while [[ $# -gt 0 ]]; do
     --catalog) CATALOGS+=("$2"); shift 2 ;;
     --charts) CHARTS="$(mkdir -p "$2" && cd "$2" && pwd)"; shift 2 ;;
     --helm) HELM=true; shift ;;
-    -h|--help) sed -n '18,65p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,73p' "$0"; exit 0 ;;
     *) echo "check: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -168,11 +176,41 @@ for g in $(yq -r '.global.okdp.access.admins[]?' "$ROOT/platform.yaml"); do
   grep -qxF "g, $g, role:admin" <(yq '.data["policy.csv"]' "$rbac") \
     || fail "${rbac#"$ROOT"/}: no \"g, $g, role:admin\" for the administrators' group $g of platform.yaml (global.okdp.access.admins)"
 done
+# The OIDC provider's certificate checked by every client, against the platform's CA
+# bundle: a forged issuer would otherwise sign in as anyone, an administrator too.
+[[ "$(yq '.global.okdp.oidc.insecureSkipVerify // false' "$ROOT/platform.yaml")" == false ]] \
+  || fail "platform.yaml: global.okdp.oidc.insecureSkipVerify takes any certificate of the issuer, it must be false (the services trust global.okdp.tls.caBundleSecret)"
+cm="$ROOT/argocd/bootstrap/argocd-cm-patch.yaml"
+[[ "$(yq '.data["oidc.tls.insecure.skip.verify"] // "false"' "$cm")" == false ]] \
+  || fail "${cm#"$ROOT"/}: oidc.tls.insecure.skip.verify takes any certificate of the issuer, it must be \"false\" (rootCA, README step 5a)"
+[[ ! -f "$SERVER_VALUES" || "$(yq '.keycloak.tlsInsecure // false' "$SERVER_VALUES")" == false ]] \
+  || fail "${SERVER_VALUES#"$ROOT"/}: keycloak.tlsInsecure sends the console's Keycloak credentials to any certificate, it must be false"
+# The console's credentials over http:// to exact hosts only.
+if [[ -f "$SERVER_VALUES" ]]; then
+  while IFS= read -r h; do
+    [[ -z "$h" || "$h" != *[*?[]* ]] \
+      || fail "${SERVER_VALUES#"$ROOT"/}: gitops.insecureHTTPHosts $h is a glob: the console's Git token goes in clear to any host it matches, name the in-cluster Forgejo's exact host"
+  done < <(yq -r '.gitops.insecureHTTPHosts[]?' "$SERVER_VALUES")
+fi
+# The secret store over https, its certificate checked, its tokens of an audience of
+# their own: every namespace's SecretStore sends a ServiceAccount token there.
+vault='.global.okdp.secrets.provider.vault'
+if [[ "$(yq "$vault != null" "$ROOT/platform.yaml")" == true ]]; then
+  [[ "$(yq "$vault.server // \"\"" "$ROOT/platform.yaml")" == https://* ]] \
+    || fail "platform.yaml: global.okdp.secrets.provider.vault.server is not https://: the namespaces' tokens and secrets would go in clear"
+  [[ "$(yq "($vault.caProvider.name // $vault.caBundle // \"\") != \"\"" "$ROOT/platform.yaml")" == true ]] \
+    || fail "platform.yaml: global.okdp.secrets.provider.vault: no caProvider nor caBundle, OpenBao's certificate of the platform's CA would not be trusted"
+  [[ "$(yq "($vault.auth.kubernetes.serviceAccountRef.audiences // []) | length" "$ROOT/platform.yaml")" != 0 ]] \
+    || fail "platform.yaml: global.okdp.secrets.provider.vault.auth.kubernetes.serviceAccountRef.audiences is empty: the store would send a token of the API server's audience"
+fi
 # The workflow scripts/configure.sh --push installs in the output repository.
 ci_topology_file "$topology" >"$TMP/topology.ci.yaml"
 if ! forgejo_output_workflow "$TMP/ci" "$TMP/topology.ci.yaml" 2>"$TMP/.workflow.log"; then
   compile_report "$TMP/.workflow.log"
   fail "the CI's workflow (okdp-gitops workflow --for output, CI_INSECURE_HTTP_HOSTS=$CI_INSECURE_HTTP_HOSTS): its topology refused"
+fi
+if [[ "$CI_INSECURE_HTTP_HOSTS" == *[*?[]* ]]; then
+  echo "   warning: CI_INSECURE_HTTP_HOSTS=$CI_INSECURE_HTTP_HOSTS is a glob: the CI's token goes in clear to any host it matches, name the in-cluster Forgejo's exact host"
 fi
 if [[ "$topology" == split ]]; then
   if [[ ! -f "$PROJECTS_FILE" ]]; then
@@ -226,6 +264,16 @@ else
   compiled=true
   compile_report "$TMP/.compile.log"
   echo "   $(find "$OUT/compiled" -type f | wc -l) files in compiled/"
+  # The control plane's ServiceAccount of platform.yaml, which the compiler binds in
+  # each project's namespace, is the one the console's package renders.
+  sa_ns="$(yq -r '.global.okdp.controlPlane.serviceAccount.namespace // ""' "$ROOT/platform.yaml")"
+  sa_name="$(yq -r '.global.okdp.controlPlane.serviceAccount.name // ""' "$ROOT/platform.yaml")"
+  if [[ -n "$sa_name" ]]; then
+    rendered="$(find "$OUT/compiled/projects/$sa_ns/instances" -name okdp.objects.yaml -exec \
+      yq -r 'select(.kind == "ServiceAccount") | .metadata.name' {} + 2>/dev/null)"
+    grep -qxF "$sa_name" <<<"$rendered" \
+      || fail "platform.yaml: global.okdp.controlPlane.serviceAccount $sa_ns/$sa_name is no ServiceAccount the instances of $sa_ns render ($(tr '\n' ' ' <<<"$rendered")): the server would get no rights in the projects' namespaces"
+  fi
 fi
 
 # --------------------------------------------------- 5. the optional projects

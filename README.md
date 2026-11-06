@@ -123,7 +123,7 @@ The platform's dependencies ([`bootstrap/`](https://github.com/OKDP/sandbox-char
 | Reloader, the deletion protection ([`policies.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/protection/policies.yaml)) | `reloader` | workloads restarted when their Secrets change, `okdp.io/protected` objects and the operators' CRDs not deleted |
 | CloudNativePG, the PostgreSQL operator | `cloudnative-pg` | the platform's database server (`cnpg-system/cnpg-postgresql`) runs on it |
 | External Secrets | `external-secrets` | the SecretStore the compiler writes in each project's namespace, over the secret store |
-| OpenBao, the platform's secret store: its KV mount `okdp`, the Kubernetes auth and the policy of the namespaces, the platform's keys | `openbao` | `global.okdp.secrets`: what crosses namespaces (the S3 access key, the secrets of Keycloak's clients, the claims' credentials), each namespace its own keys |
+| OpenBao, the platform's secret store, over https (a certificate of `default-issuer`): its KV mount `okdp`, the Kubernetes auth (the role `okdp`, of the audience `openbao`) and the policy of the namespaces, the platform's keys | `openbao` | `global.okdp.secrets`: what crosses namespaces (the S3 access key, the secrets of Keycloak's clients, the claims' credentials), each namespace its own keys; each namespace's SecretStore checks OpenBao's certificate against `certs-bundle` and signs in with a token of the audience `openbao` |
 | Keycloak, its PostgreSQL and its realm `okdp` (users, roles, clients and their secrets, generated; the services register their clients with initial access tokens, no anonymous registration; `master` for Keycloak's admin only) | `keycloakx` (codecentric) | `global.okdp.oidc`; its clients' secrets in the secret store, under the keys of the namespaces that read them (`<namespace>/keycloak/<client>`) |
 | RustFS, the S3 store, its buckets and the platform's access key | `rustfs` | the connection `platform-s3` (contract `s3`), its credentials in the secret store (`platform/s3`) |
 | Forgejo, the deployments repositories and the service catalogs | `forgejo` | the control plane server's settings |
@@ -431,11 +431,13 @@ account `okdp-gitops` is deleted, its tokens and teams with it):
 Each run sets a random password on each account, creates its tokens with it and
 forgets it; their previous tokens are deleted. The CI's jobs get the CI's token from
 the output repository's Actions secret (the runner holds no git credentials; the
-token goes in clear, over `http://`, to the cluster's services only: the workflow
-carries
-`GITOPS_INSECURE_HTTP_HOSTS='*.svc.cluster.local'`, `CI_INSECURE_HTTP_HOSTS` of
-`scripts/lib/topology.sh`, with which `scripts/check.sh` has `okdp-gitops workflow`
-write the CI's workflow, refused for another `http://` host), and
+token goes in clear, over `http://`, to the in-cluster Forgejo only, its exact host,
+never a glob of the cluster's Services: the workflow carries
+`GITOPS_INSECURE_HTTP_HOSTS=forgejo-http.forgejo.svc.cluster.local`,
+`CI_INSECURE_HTTP_HOSTS` of `scripts/lib/topology.sh`, with which `scripts/check.sh`
+has `okdp-gitops workflow` write the CI's workflow, refused for another `http://`
+host; not `https://forgejo.okdp.sandbox`, which the job's container, without the
+platform's CA bundle, cannot check), and
 the runner's registration secret to `forgejo/okdp-runner-registration`, nowhere else.
 The output repository's `main` is protected: `okdp-ci` alone pushes there (its
 push whitelist), never the admin, the console nor a person, no force push; the
@@ -458,12 +460,19 @@ kubectl create namespace argocd
 kubectl apply -n argocd --server-side --force-conflicts \
   -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.2/manifests/install.yaml
 # The health of Applications (the sync waves wait for healthy Applications), the sign-in
-# with Keycloak and its roles.
-kubectl -n argocd patch configmap argocd-cm --type merge \
-  --patch-file gitops/argocd/bootstrap/argocd-cm-patch.yaml
+# with Keycloak and its roles. Keycloak's certificate is checked against the platform's
+# CA bundle, which trust-manager writes in the new namespace (Secret certs-bundle):
+# rootCA of oidc.config, added to the patch here.
+until kubectl -n argocd get secret certs-bundle >/dev/null 2>&1; do sleep 2; done
+ca="$(mktemp)"
+kubectl -n argocd get secret certs-bundle -o jsonpath='{.data.ca\.crt}' | base64 -d >"$ca"
+CA_FILE="$ca" yq '.data["oidc.config"] |= (from_yaml | .rootCA = load_str(strenv(CA_FILE)) | to_yaml)' \
+  gitops/argocd/bootstrap/argocd-cm-patch.yaml \
+  | kubectl -n argocd patch configmap argocd-cm --type merge --patch-file /dev/stdin
+rm -f "$ca"
 kubectl -n argocd patch configmap argocd-rbac-cm --type merge \
   --patch-file gitops/argocd/bootstrap/argocd-rbac-cm-patch.yaml
-# argocd-server reads the OIDC TLS setting at startup only.
+# argocd-server reads the OIDC settings at startup only.
 kubectl -n argocd rollout restart deployment argocd-server
 kubectl apply -n argocd -f gitops/argocd/
 ```
@@ -516,8 +525,10 @@ that wait for others after them (Argo CD's sync waves, Flux's `dependsOn`), the 
 retried until the platform they need is up. Everything is ready after 15 to 30 minutes,
 depending on the machine and the network.
 
-Then turn on Forgejo's sign-in with Keycloak, once: restart Forgejo (it reads the sandbox
-CA bundle at startup, and the platform creates the bundle after Forgejo's bootstrap), then
+Then turn on Forgejo's sign-in with Keycloak, once: restart Forgejo (it checks Keycloak's
+certificate against the sandbox CA bundle, `SSL_CERT_DIR`, which it reads at startup, and
+the platform creates the bundle after Forgejo's bootstrap; an OAuth source has no setting
+that skips the check), then
 push again with `--sign-in`, which creates its OAuth source (in Forgejo's database: the
 chart would recreate it at every start, which then needs Keycloak reachable), with the
 secret of the realm's client `forgejo` (step 3), given to the pod on its standard input,

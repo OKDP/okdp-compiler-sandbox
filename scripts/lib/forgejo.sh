@@ -376,7 +376,7 @@ forgejo_push_tree() {
 # okdp-gitops compile of the topology file TOPOLOGY, which the workflow carries (the
 # runner has none), with the output repository's secret OKDP_GITOPS_TOKEN, the only
 # token of the CI (forgejo_ci_token): it reads the sources and writes the output, over
-# http:// to the hosts of CI_INSECURE_HTTP_HOSTS only (the cluster's services), the
+# http:// to the hosts of CI_INSECURE_HTTP_HOSTS only (the in-cluster Forgejo), the
 # job's environment carrying them. A run whose sources did not move since the last
 # compile (sources.yaml of the output) stops early; no push starts a run.
 forgejo_output_workflow() {

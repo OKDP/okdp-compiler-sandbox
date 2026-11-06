@@ -203,9 +203,14 @@ ci_topology_file() { topology_file "$1" | grep -v '^forgejo:'; }
 # CI_INSECURE_HTTP_HOSTS: the hosts the CI's token may reach over http://, in clear,
 # comma separated, globs allowed (okdp-gitops workflow refuses a topology with an
 # http:// URL of any other host, okdp-gitops compile sends no credential there): the
-# cluster's services, the in-cluster Forgejo of forgejo_cluster_url among them. The
-# workflow carries it, as GITOPS_INSECURE_HTTP_HOSTS of the job's environment.
-CI_INSECURE_HTTP_HOSTS="${CI_INSECURE_HTTP_HOSTS:-*.svc.cluster.local}"
+# in-cluster Forgejo of forgejo_cluster_url only, its exact host, never a glob such
+# as *.svc.cluster.local, which would hand the token to any Service of the cluster
+# that a topology or a catalog named. http:// and not https://: the job's container
+# (okdp-gitops workflow's, on the runner's Docker daemon) has no setting for the
+# platform's CA bundle, which https://forgejo.okdp.sandbox needs; the token crosses
+# the cluster's network only, from the runner's pod to Forgejo's Service. The workflow
+# carries it, as GITOPS_INSECURE_HTTP_HOSTS of the job's environment.
+CI_INSECURE_HTTP_HOSTS="${CI_INSECURE_HTTP_HOSTS:-forgejo-http.forgejo.svc.cluster.local}"
 
 # The output repository of a topology: compiled/, argocd/ at its root, a repository
 # of its own in every topology.
