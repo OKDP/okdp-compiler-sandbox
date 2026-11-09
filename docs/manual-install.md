@@ -279,9 +279,13 @@ and the platform's access key, OpenBao and its init: the commands of sandbox-cha
 [step 3](../README.md#3-install-the-platforms-dependencies) runs), but Forgejo's and its
 runner's, from the catalog sandbox-charts fetched at step 4, at its `ref`. Each `helm`
 waits for its release (and its hooks: Keycloak's realm, RustFS' buckets and identity).
+The namespaces come first, with their Pod Security levels (`namespaces.yaml`:
+`baseline` enforced, `restricted` warned and audited), which the releases'
+`--create-namespace` find.
 
 ```sh
 cd "$WORK/catalogs/sandbox-charts"
+kubectl apply -f bootstrap/namespaces.yaml
 helm upgrade --install cert-manager cert-manager --repo https://charts.jetstack.io --version v1.21.2 \
   -n cert-manager --create-namespace --wait -f bootstrap/cert-manager/values.yaml
 helm upgrade --install trust-manager trust-manager --repo https://charts.jetstack.io --version v0.25.0 \
@@ -301,7 +305,6 @@ helm upgrade --install cloudnative-pg oci://ghcr.io/cloudnative-pg/charts/cloudn
   -n cnpg-system --create-namespace --wait -f bootstrap/cloudnative-pg/values.yaml
 helm upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets --version 2.11.0 \
   -n external-secrets --create-namespace --wait -f bootstrap/external-secrets/values.yaml
-kubectl create namespace keycloak
 head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' | kubectl -n keycloak create secret generic \
   keycloak-admin --from-file=admin-password=/dev/stdin
 kubectl apply -f bootstrap/keycloak/database.yaml
@@ -324,14 +327,17 @@ connection `platform-s3` names, and so is the secret of each client of the realm
 `<namespace>/keycloak/<client>` of the namespaces that read it, as
 `bootstrap/openbao/clients.yaml` lists them (`okdp-system/keycloak/okdp-control-plane`,
 `demo/keycloak/<client>`), which the Secrets of `okdp-system/local-secrets-provider`
-and `demo/secrets` read
-(OpenBao's root token, for the bootstrap and for looking, is in Secret
-`openbao/openbao-init`: sandbox only; `bao` reads it on its standard input):
+and `demo/secrets` read. No root token remains (`init.sh` revokes it): the names of
+the keys are listed signed in as the ServiceAccount `openbao/okdp-bootstrap` (role
+`okdp-bootstrap`, its token given to `bao` in the pod on its standard input, revoked
+after), which lists the keys and reads none; their values are those of the
+bootstrap's Secrets, the platform signs in as the ServiceAccount of each namespace:
 
 ```sh
-kubectl -n openbao get secret openbao-init -o jsonpath='{.data.root-token}' | base64 -d \
-  | kubectl -n openbao exec -i openbao-0 -c openbao -- \
-    sh -c 'read -r BAO_TOKEN; export BAO_TOKEN; bao kv get -mount=okdp platform/s3'
+kubectl -n openbao create token okdp-bootstrap --audience openbao --duration 10m \
+  | kubectl -n openbao exec -i openbao-0 -c openbao -- sh -c \
+    'BAO_TOKEN="$(bao write -field=token auth/kubernetes/login role=okdp-bootstrap jwt=-)" && export BAO_TOKEN
+     bao kv list okdp/; bao token revoke -self >/dev/null'
 ```
 
 Check: the CA issuer is ready and the CA bundle synced:

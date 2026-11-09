@@ -31,6 +31,10 @@
 #   control-plane.yaml the Role and RoleBinding okdp-control-plane of <p>, what the
 #                      control plane's ServiceAccount does there
 #                      (global.okdp.controlPlane of platform.yaml), when it is set;
+#   network-policy.yaml the NetworkPolicy okdp-project of <p>, its pods' ingress
+#                      from <p>, the platform's ingress namespaces and its claimers'
+#                      namespaces only (global.okdp.network of platform.yaml), for a
+#                      project that is not the platform's, when it is set;
 #   appproject.yaml    AppProject project-<p> in argocd, which the Applications of
 #                      its instances name: sources the output repository; destined
 #                      to namespace <p> only, no cluster-scoped kind, for a project
@@ -39,7 +43,7 @@
 #                      the groups of project.yaml access.
 # The same directory holds the files of the Flux target (kustomization.yaml,
 # service-account.yaml, the identity of helm-controller in okdp-releases), which
-# Argo CD does not apply: only the five files above are included. The
+# Argo CD does not apply: only the six files above are included. The
 # Applications are of the entry point's AppProject okdp, which may write the
 # Namespaces, the AppProjects, the Roles and the RoleBindings (project.yaml); Argo
 # CD's application controller, whose identity applies them, holds every
@@ -83,7 +87,7 @@ spec:
         # A plain directory, explicitly: Argo CD would read it as a Kustomize
         # application (the Flux target's kustomization.yaml).
         directory:
-          include: '{namespace.yaml,secret-store.yaml,access.yaml,control-plane.yaml,appproject.yaml}'
+          include: '{namespace.yaml,secret-store.yaml,access.yaml,control-plane.yaml,network-policy.yaml,appproject.yaml}'
       destination:
         server: https://kubernetes.default.svc
         namespace: argocd

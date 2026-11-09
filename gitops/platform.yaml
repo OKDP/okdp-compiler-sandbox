@@ -236,6 +236,26 @@ global:
         - k8ssandra-operator
         - nifikop
 
+    # The network of the projects' namespaces: with policy, the compiler writes in
+    # each project's namespace but the platform's own (policy.privileged above) a
+    # NetworkPolicy okdp-project (project/network-policy.yaml), which lets in the
+    # namespace's own pods, the pods of ingressNamespaces and of the namespaces
+    # whose claims its instances provide (the demo's, in cnpg-system and
+    # s3-system), and refuses every other ingress; egress stays open. A pod of
+    # another project reaches no service of the project but through the ingress
+    # controller. ingressNamespaces: ingress-nginx, the bootstrap's ingress
+    # controller, the services' hosts; okdp-system, the control plane, whose SQL
+    # editor and connection tests reach the projects' databases and Trino. A
+    # namespace of the bootstrap (keycloak, openbao, rustfs, forgejo) brings its own
+    # (sandbox-charts' bootstrap/README.md, Network policies). The policies are
+    # enforced by the cluster's network plugin: kind's default, kindnet (kind 0.24
+    # and later), does; a plugin that does not ignores them.
+    network:
+      policy: true
+      ingressNamespaces:
+        - ingress-nginx
+        - okdp-system
+
 # The platform's connections, in the context of every instance, which references them
 # by name; no project or instance may redefine them.
 connections:

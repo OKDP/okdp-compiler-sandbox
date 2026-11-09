@@ -30,9 +30,10 @@
 # HelmRelease and values ConfigMap in okdp-releases. The project's manifests: its
 # Namespace with its Pod Security labels, the ServiceAccount and SecretStore of the
 # platform's secret store in it, and, for a project that is not one of the
-# platform's own (global.okdp.policy.privileged of platform.yaml), the
-# ServiceAccount project-<p> in okdp-releases, bound to every verb of namespace <p>
-# only, as which helm-controller installs its releases (serviceAccountName); the
+# platform's own (global.okdp.policy.privileged of platform.yaml), its
+# NetworkPolicy okdp-project (global.okdp.network) and the ServiceAccount
+# project-<p> in okdp-releases, bound to every verb of namespace <p> only, as
+# which helm-controller installs its releases (serviceAccountName); the
 # platform's own projects' releases are helm-controller's. kustomize-controller
 # applies the Namespaces and the RBAC first. Not generated, not in the output
 # repository. Names no release, <project>-<instance>, can take in these namespaces:

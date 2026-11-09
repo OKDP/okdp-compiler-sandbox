@@ -42,7 +42,12 @@
 #     okdp-gitops image of the CI's jobs (sandbox-charts' bootstrap/forgejo-runner), which the runner's
 #     own Docker daemon pulls from its registry (an image loaded into the node is not
 #     seen: push it to a registry), its registry added to the runner's
-#     insecureRegistries (plain HTTP allowed);
+#     insecureRegistries (plain HTTP allowed) and to its egress
+#     (networkPolicy.registries: the runner's NetworkPolicy lets out the
+#     bootstrap's okdp-registry:5000 of the kind network and the internet's 443
+#     only): E2E_GITOPS_REGISTRY_CIDR, else the address of the registry's host, a
+#     container of the kind network (docker inspect) or a name the host resolves,
+#     its port, else 443;
 #   - E2E_SKIP_PROJECTS drops these projects (e.g. demo: the platform's only);
 #   - then the copy is committed; scripts/configure.sh --push compiles it.
 # The service packages are read from the catalogs of catalogs.yaml (Git, at
@@ -62,6 +67,8 @@
 #   OKDP_CATALOGS "NAME=DIR|URL ..." where the catalogs are read from
 #   E2E_SERVER_IMAGE, E2E_UI_IMAGE   images of the control plane (repository:tag)
 #   E2E_GITOPS_IMAGE         the okdp-gitops image of the CI's jobs (repository:tag, in a registry)
+#   E2E_GITOPS_REGISTRY_CIDR the runner's egress to that registry (a CIDR, its port
+#                            the image's registry's), default its host's address
 #   OKDP_GITOPS   the okdp-gitops binary (default: okdp-gitops in PATH)
 #   E2E_LOAD_IMAGES          images loaded into the kind node (space separated)
 #   E2E_SKIP_PROJECTS        projects left out (space separated), e.g. demo
@@ -72,7 +79,7 @@
 set -euo pipefail
 
 ACTION="${1:-}"; ENGINE="${2:-}"
-[[ "$ACTION" =~ ^(up|push|down)$ && "$ENGINE" =~ ^(argocd|flux)$ ]] || { sed -n '18,70p' "$0"; exit 2; }
+[[ "$ACTION" =~ ^(up|push|down)$ && "$ENGINE" =~ ^(argocd|flux)$ ]] || { sed -n '18,77p' "$0"; exit 2; }
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPTS/../gitops" && pwd)"
@@ -85,6 +92,7 @@ E2E_SKIP_PROJECTS="${E2E_SKIP_PROJECTS:-}"
 E2E_SERVER_IMAGE="${E2E_SERVER_IMAGE:-}"
 E2E_UI_IMAGE="${E2E_UI_IMAGE:-}"
 E2E_GITOPS_IMAGE="${E2E_GITOPS_IMAGE:-}"
+E2E_GITOPS_REGISTRY_CIDR="${E2E_GITOPS_REGISTRY_CIDR:-}"
 ARGOCD_VERSION="${ARGOCD_VERSION:-v3.4.2}"
 FLUX_VERSION="${FLUX_VERSION:-v2.9.5}"
 E2E_TIMEOUT="${E2E_TIMEOUT:-2400}"
@@ -106,6 +114,24 @@ if [[ "$ACTION" == down ]]; then
 fi
 
 # ---------------------------------------------------------- adapted copy
+# runner_registry HOST[:PORT]: the runner's egress to the registry of the CI's image
+# (networkPolicy.registries of $BOOTSTRAP_COPY/forgejo-runner/values.yaml, which lets
+# out okdp-registry:5000 of the kind network and the internet's 443, not the
+# private ranges): E2E_GITOPS_REGISTRY_CIDR, else HOST's address, a container of the
+# kind network or a name this host resolves; PORT, else 443.
+runner_registry() {
+  local host="${1%:*}" port=443 cidr="$E2E_GITOPS_REGISTRY_CIDR" ip
+  [[ "$1" == *:* ]] && port="${1##*:}"
+  if [[ -z "$cidr" ]]; then
+    ip="$(docker inspect -f '{{with index .NetworkSettings.Networks "kind"}}{{.IPAddress}}{{end}}' "$host" 2>/dev/null || true)"
+    [[ -n "$ip" ]] || ip="$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR == 1 {print $1}' || true)"
+    [[ -n "$ip" ]] || { log "WARNING: registry $host: no address, the CI runner's jobs may not pull $E2E_GITOPS_IMAGE (set E2E_GITOPS_REGISTRY_CIDR)"; return 0; }
+    cidr="$ip/32"
+  fi
+  CIDR="$cidr" PORT="$port" yq -i '.networkPolicy.registries = ((.networkPolicy.registries // []) + [{"cidr": strenv(CIDR), "port": (strenv(PORT) | tonumber)}] | unique)' \
+    "$BOOTSTRAP_COPY/forgejo-runner/values.yaml"
+}
+
 # prepare_copy: $COPY = the repository at E2E_REF with the test adaptations,
 # committed on top of E2E_REF (a fresh history each time: the push is forced), and
 # $BOOTSTRAP_COPY = the bootstrap/ of the catalog sandbox-charts as the copy's
@@ -142,6 +168,7 @@ prepare_copy() {
     if [[ "$E2E_GITOPS_IMAGE" == */* && "$registry" == *[.:]* ]]; then
       REG="$registry" yq -i '.insecureRegistries = ((.insecureRegistries // []) + [strenv(REG)] | unique)' \
         "$BOOTSTRAP_COPY/forgejo-runner/values.yaml"
+      runner_registry "$registry"
     fi
   fi
   "$SCRIPTS/configure.sh" --root "$G" --engine "$ENGINE" --topology "$E2E_TOPOLOGY" </dev/null >/dev/null

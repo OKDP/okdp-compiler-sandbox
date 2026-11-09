@@ -22,6 +22,11 @@
 # catalog sandbox-charts', read as the catalogs are (scripts/compile.sh): at its ref of
 # gitops/catalogs.yaml, from --catalog sandbox-charts=SRC or OKDP_CATALOGS, else the
 # checkout next to this repository, else GitHub; its README lists the commands:
+#   0. the namespaces of the releases, each with its Pod Security level
+#      (bootstrap/namespaces.yaml: baseline enforced, restricted warned and
+#      audited; forgejo privileged, the CI runner's Docker daemon), applied first so
+#      that no release creates its namespace unlabelled (--create-namespace finds
+#      them);
 #   1. cert-manager, trust-manager and the cluster issuer default-issuer, a CA minted
 #      in the cluster (namespace cert-manager), then the CA bundle of every namespace
 #      (bootstrap/trust-manager/bundle.yaml, Secret and ConfigMap certs-bundle);
@@ -41,7 +46,9 @@
 #   7. RustFS, the S3 store (rustfs): its buckets, and the platform's access key;
 #   8. OpenBao (openbao), the platform's secret store, then its init
 #      (bootstrap/openbao/init.sh): initialized and unsealed (SANDBOX ONLY: its
-#      unseal key and root token in Secret openbao/openbao-init), the KV mount, the
+#      unseal key in Secret openbao/openbao-init; its root token revoked once the
+#      role okdp-bootstrap signs in, every run signed in as the ServiceAccount
+#      openbao/okdp-bootstrap), the KV mount, the
 #      Kubernetes auth and the policy of the namespaces, the platform's key: the
 #      S3 access key under platform/s3; the secret of each client of the realm
 #      under <namespace>/keycloak/<client> (property client_secret) of the
@@ -76,7 +83,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) DIR="$(cd "$2" && pwd)"; shift 2 ;;
     --catalog) CATALOGS+=("$2"); shift 2 ;;
-    -h|--help) sed -n '18,66p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,73p' "$0"; exit 0 ;;
     *) echo "bootstrap: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -94,7 +101,6 @@ fi
 echo "bootstrap: $DIR"
 
 step() { echo; echo "== $*"; }
-namespace() { kubectl create namespace "$1" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; }
 
 # release NAME [--no-wait]: helm upgrade --install of the release NAME of charts.yaml,
 # waiting for it (and for its hooks) but with --no-wait.
@@ -119,6 +125,13 @@ release() {
 
 echo "Installing the platform's dependencies into the context $(kubectl config current-context)"
 
+# The namespaces first, with their Pod Security labels: a release's
+# --create-namespace would create its namespace without them.
+step "The namespaces and their Pod Security levels"
+[[ -f "$DIR/namespaces.yaml" ]] \
+  || { echo "bootstrap: $DIR has no namespaces.yaml (the namespaces' Pod Security levels): a bootstrap of sandbox-charts older than this script" >&2; exit 1; }
+kubectl apply -f "$DIR/namespaces.yaml"
+
 step "cert-manager, trust-manager, the cluster issuer and the CA bundle"
 release cert-manager
 release trust-manager
@@ -141,7 +154,6 @@ step "External Secrets"
 release external-secrets
 
 step "Keycloak and its database"
-namespace keycloak
 if ! kubectl -n keycloak get secret keycloak-admin >/dev/null 2>&1; then
   head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' | kubectl -n keycloak create secret generic \
     keycloak-admin --from-file=admin-password=/dev/stdin
@@ -167,7 +179,6 @@ release openbao
 DCR_NAMESPACES="${DCR_NAMESPACES:-demo}" "$DIR/openbao/init.sh"
 
 step "Forgejo"
-namespace forgejo
 if ! kubectl -n forgejo get secret okdp-forgejo-admin >/dev/null 2>&1; then
   head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' | kubectl -n forgejo create secret generic \
     okdp-forgejo-admin --from-literal=username=okdp-admin --from-file=password=/dev/stdin

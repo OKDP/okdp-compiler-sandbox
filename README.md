@@ -80,6 +80,16 @@ The sandbox is for a single workstation, not a shared or reachable environment:
     cluster-scoped kind, its releases installed under an AppProject of its namespace
     (Argo CD) or as a ServiceAccount of its namespace (Flux), Pod Security
     `baseline` enforced. Add a project to the list only if it must;
+  - the network of a confined project's namespace is closed to the other projects:
+    a NetworkPolicy the compiler writes there (`global.okdp.network` of
+    [`platform.yaml`](gitops/platform.yaml), `project/network-policy.yaml`) lets in
+    its own pods, the ingress controller (`ingress-nginx`), the control plane
+    (`okdp-system`, the SQL editor's and the connection tests' databases) and the
+    namespaces whose claims it provides (the demo's, in `cnpg-system` and
+    `s3-system`), nothing else; egress stays open. The bootstrap's namespaces
+    (OpenBao, Keycloak, RustFS, Forgejo) bring their own. kind's network plugin,
+    kindnet, enforces them (kind 0.24 and later); with a plugin that does not, every
+    pod reaches every service;
   - the CI is the output repository's: its workflow, the only one, compiles the
     sources every 2 minutes (a run whose sources did not move stops early), in an
     ephemeral container of the okdp-gitops image, on a runner registered for the
@@ -90,11 +100,13 @@ The sandbox is for a single workstation, not a shared or reachable environment:
     output itself: the sources hold no workflow and no token, their Actions off.
 - **What stays sandbox-only**, never to reuse on a platform:
   - **the secret store is unsealed by itself.** OpenBao is initialized with one unseal
-    key share, kept with its root token in Secret `openbao/openbao-init`, which a
-    sidecar of its pod reads to unseal it at every restart: whoever reads that Secret
-    reads every credential of the platform. A platform's OpenBao holds its key shares
-    elsewhere or auto-unseals with a KMS, revokes its root token, and serves TLS (the
-    sandbox's answers plain HTTP in the cluster);
+    key share, kept in Secret `openbao/openbao-init`, which a sidecar of its pod reads
+    to unseal it at every restart: whoever reads that Secret and the volume reads
+    every credential of the platform. Its root token is revoked at the init, once
+    the role `okdp-bootstrap` signs in (the ServiceAccount `openbao/okdp-bootstrap`,
+    which writes the keys and reads none); it serves TLS (a certificate of
+    `default-issuer`). A platform's OpenBao holds its key shares elsewhere or
+    auto-unseals with a KMS;
   - **the CI runner's Docker daemon is privileged** (docker-in-docker): the jobs'
     containers are not and cannot reach it, but an escape from it is root on the
     node; the namespace `forgejo` admits privileged pods. A platform runs its CI
@@ -310,16 +322,25 @@ server = "http://okdp-registry:5000"
 EOF
 ```
 
-Then point the CI runner at it, in its values, sandbox-charts'
-[`bootstrap/forgejo-runner/values.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/forgejo-runner/values.yaml)
-of the checkout next to this repository (step 3 with `--dir ../sandbox-charts/bootstrap`) (`scripts/e2e-kind.sh` does the same with
-`E2E_GITOPS_IMAGE=okdp-registry:5000/okdp-gitops:dev`):
+The CI runner's values, sandbox-charts'
+[`bootstrap/forgejo-runner/values.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/forgejo-runner/values.yaml),
+name it by default; the runner's NetworkPolicy lets its pod out to that registry
+(`networkPolicy.registries`, the kind network `172.18.0.0/16` on port 5000), the
+cluster's DNS, Forgejo and the internet's port 443, no private range. An image of
+another registry is set there, in the checkout next to this repository (step 3 with
+`--dir ../sandbox-charts/bootstrap`), its registry's address and port added to
+`networkPolicy.registries` when it is on a private range or another port
+(`scripts/e2e-kind.sh` does the same with `E2E_GITOPS_IMAGE`, the address of the
+registry's host, or `E2E_GITOPS_REGISTRY_CIDR`):
 
 ```yaml
 okdpGitopsImage:
   repository: okdp-registry:5000/okdp-gitops
   tag: dev
 insecureRegistries: [okdp-registry:5000]
+networkPolicy:
+  registries:
+    - {cidr: 172.18.0.0/16, port: 5000}
 ```
 
 The console shows pod CPU and memory through metrics-server:
@@ -357,8 +378,11 @@ read ([`gitops/catalogs.yaml`](gitops/catalogs.yaml): sandbox-charts at its `ref
 the checkout next to this repository, else GitHub; `--catalog sandbox-charts=SRC` or
 `OKDP_CATALOGS` for another), so that the prerequisites and the packages are of one
 commit. `--dir DIR` installs a bootstrap directory as it is, uncommitted changes
-included (`--dir ../sandbox-charts/bootstrap`). It needs `helm`, `yq`, `jq`, `awk` and
-`git`.
+included (`--dir ../sandbox-charts/bootstrap`). It applies the namespaces first,
+with their Pod Security levels (`bootstrap/namespaces.yaml`: `baseline` enforced,
+`restricted` warned and audited, `forgejo` alone `privileged` for the CI runner's
+Docker daemon), which the releases' `--create-namespace` find. It needs `helm`, `yq`,
+`jq`, `awk` and `git`.
 
 Their ingresses (`keycloak`, `s3`, `s3-console`, `forgejo` `.okdp.sandbox`) are served
 by the ingress controller installed first. The
@@ -370,13 +394,17 @@ RustFS' root, for its console:
 `kubectl -n rustfs get secret rustfs-root -o jsonpath='{.data.RUSTFS_SECRET_KEY}' | base64 -d`
 (user `okdp-root`); a client's secret:
 `kubectl -n keycloak get secret keycloak-client-secrets -o jsonpath='{.data.<client>}' | base64 -d`;
-OpenBao's keys, with its root token, given to `bao` in the pod on
-its standard input (the root token is for the bootstrap and for looking: the platform
-signs in as the ServiceAccount of each namespace):
+the names of OpenBao's keys, signed in as the ServiceAccount `openbao/okdp-bootstrap`
+(role `okdp-bootstrap`; its token given to `bao` in the pod on its standard input,
+revoked after): no root token remains, the bootstrap's init revokes it, and that
+identity lists the keys and reads none (their values are those of the Secrets above;
+the platform signs in as the ServiceAccount of each namespace):
 
 ```sh
-kubectl -n openbao get secret openbao-init -o jsonpath='{.data.root-token}' | base64 -d \
-  | kubectl -n openbao exec -i openbao-0 -c openbao -- sh -c 'read -r BAO_TOKEN; export BAO_TOKEN; bao kv list okdp/'
+kubectl -n openbao create token okdp-bootstrap --audience openbao --duration 10m \
+  | kubectl -n openbao exec -i openbao-0 -c openbao -- sh -c \
+    'BAO_TOKEN="$(bao write -field=token auth/kubernetes/login role=okdp-bootstrap jwt=-)" && export BAO_TOKEN
+     bao kv list okdp/; bao token revoke -self >/dev/null'
 ```
 
 A sandbox installed before the dependencies left the compiled tree is reinstalled:
