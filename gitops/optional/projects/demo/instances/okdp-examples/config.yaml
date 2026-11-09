@@ -4,7 +4,8 @@
 # projects/demo/instances/, commit and push, or deploy okdp-examples from
 # the console. It also creates the Polaris catalog "demo" behind the Trino catalog
 # "iceberg" (formerly clusters/sandbox/project-demo/60-polaris-catalog-job.yaml).
-# The medallion buckets' store: the platform's S3 connection platform-s3; the seed
+# The medallion buckets' store: the project's S3 connection platform-s3 (the demo's
+# project.yaml); the seed
 # Job creates bronze, silver and gold if missing with its credentials. The Spark event
 # logs in the bucket of the connection, which spark-history reads.
 storage: platform-s3

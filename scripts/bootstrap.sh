@@ -49,10 +49,11 @@
 #      unseal key in Secret openbao/openbao-init; its root token revoked once the
 #      role okdp-bootstrap signs in, every run signed in as the ServiceAccount
 #      openbao/okdp-bootstrap), the KV mount, the
-#      Kubernetes auth and the policy of the namespaces, the platform's key: the
-#      S3 access key under platform/s3; the secret of each client of the realm
-#      under <namespace>/keycloak/<client> (property client_secret) of the
-#      namespaces that read it (bootstrap/openbao/clients.yaml), where the
+#      Kubernetes auth and the policy of the namespaces (no namespace reads
+#      platform/), the platform's S3 identity under <namespace>/s3/platform of the
+#      namespaces of bootstrap/openbao/s3.yaml (demo); the secret of each client of
+#      the realm under <namespace>/keycloak/<client> (property client_secret) of
+#      the namespaces that read it (bootstrap/openbao/clients.yaml), where the
 #      compiled instances read it; an initial access token of the realm okdp per
 #      namespace of DCR_NAMESPACES (demo by default), with which its services
 #      register their OAuth clients (the realm refuses anonymous registration);
@@ -83,7 +84,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) DIR="$(cd "$2" && pwd)"; shift 2 ;;
     --catalog) CATALOGS+=("$2"); shift 2 ;;
-    -h|--help) sed -n '18,73p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,74p' "$0"; exit 0 ;;
     *) echo "bootstrap: unknown argument: $1" >&2; exit 2 ;;
   esac
 done

@@ -1,8 +1,9 @@
 # The ${suffix} and ${storage.apiUrl} placeholders are replaced by the package
 # (catalog/jupyterhub README): an instance value holds no {{ (okdp-compile refuses it).
-# The file browser's object store: the platform's S3 connection platform-s3, its
-# credentials, which the compiler reads from the platform's secret store into the
-# Secret <release>.<connection>-credentials of the namespace.
+# The file browser's object store: the project's S3 connection platform-s3
+# (project.yaml), its credentials, which the compiler reads from the platform's secret
+# store (demo/s3/platform) into the Secret <release>.<connection>-credentials of the
+# namespace.
 storage: platform-s3
 fileBrowserLocations:
   - {name: bronze, uri: 's3://bronze'}

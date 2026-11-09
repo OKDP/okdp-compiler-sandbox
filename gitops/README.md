@@ -400,8 +400,8 @@ instead, a map in place of the name: `{}` (a database of its own, of the default
 class), `{class: <class>}`, `{provider: <namespace>/<instance>}`, each with a `request`
 (the contract's `x-okdp-claim`); the packages that need a database of their own claim
 it by default, left out of `config.yaml` ([Claims](#claims)). No package claims a
-bucket by default: an `s3` reference names a connection, the platform's
-`platform-s3` in the sandbox.
+bucket by default: an `s3` reference names a connection, in the sandbox the demo
+project's `platform-s3` (the platform's buckets, with the platform's identity).
 
 ### `connections.yaml`
 
@@ -415,17 +415,18 @@ A connection is declared in `platform.yaml` (every instance may reference it),
 entry `connections.<c>`, `<c>` a DNS label:
 
 ```yaml
+# projects/demo/project.yaml
 connections:
   platform-s3:                    # = <c>
     contract: s3                  # a contract of the catalogs: database-server | s3 | hive | iceberg-catalog | trino ...
-    description: The platform's S3 store, RustFS of the bootstrap
+    description: The platform's S3 store, RustFS of the bootstrap, with the platform's identity
     apiUrl: https://s3.okdp.sandbox  # the non-secret fields of the contract
     internalUrl: http://rustfs-svc.rustfs.svc.cluster.local:9000
     region: us-east-1
     bucket: okdp
     pathStyle: true
     secretRef:
-      remoteKey: platform/s3      # its credentials: a key of the platform's secret store
+      remoteKey: demo/s3/platform # its credentials: a key of the platform's secret store, the namespace's
 ```
 
 Its credentials, the secret fields of its contract, are a Secret of the referencing
@@ -435,16 +436,18 @@ property of it: the compiler then gives each instance that references the connec
 an ExternalSecret of that key, into the Secret `<release>.<c>-credentials` of its
 namespace, which its package reads as any connection's `secretRef.name`
 ([okdp-compiler](https://github.com/OKDP/okdp-compiler/blob/main/docs/specs/01_inputs_outputs.md#credentials-in-the-platforms-secret-store)).
-This is how the platform talks to a store it neither deploys nor manages: the
-platform's keys are under `platform/`, which every namespace reads and the bootstrap
-writes (the sandbox's S3 store, RustFS, generates the platform's access key, and
-OpenBao's init copies it under `platform/s3`, fields `accessKey` and `secretKey`; the
-secrets of the Keycloak realm's clients are no platform keys: it writes each under
-`<namespace>/keycloak/<client>` of the namespaces that read it, which
-`local-secrets-provider` reads there, `remoteKey`); a
-company's own S3 takes its place with its fields and its key in the store. A
-project's own connection may only name a key of its namespace, `<p>/<key>`: the
-store's policy allows nothing else ([Claims](#claims)).
+This is how a project talks to a store the platform neither deploys nor manages: the
+bootstrap writes what a namespace needs of the platform under that namespace's keys,
+which no other namespace reads (the sandbox's S3 store, RustFS, generates the
+platform's identity, and OpenBao's init copies it under `<namespace>/s3/platform` of
+the namespaces of sandbox-charts' `bootstrap/openbao/s3.yaml`, the demo only, fields
+`accessKey` and `secretKey`; the secrets of the Keycloak realm's clients under
+`<namespace>/keycloak/<client>` of the namespaces that read them, which
+`local-secrets-provider` reads there, `remoteKey`). No namespace reads `platform/`,
+which holds no key: a connection of `platform.yaml` (none in the sandbox) would give
+every namespace one key, and a project's own connection may only name a key of its
+namespace, `<p>/<key>`: the store's policy allows nothing else ([Claims](#claims)). A
+company's own S3 takes RustFS' place with its fields and its keys in the store.
 
 The compile checks each connection an instance references against
 `contracts/<contract>.schema.json` of the catalogs (unknown fields, secret fields
@@ -488,8 +491,8 @@ and an `ExternalSecret` of the claimer, both written by the compiler, under the 
 `<provider's namespace>/<claim ID>` (`cnpg-system/demo.hive.db`). OpenBao's policy,
 templated on the namespace that signs in ([`bootstrap/openbao/init.sh`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/openbao/init.sh)),
 lets the provider write `<its namespace>/*`, a claimer read `+/<its namespace>.*`
-(its claims, whichever namespace provides them) and every namespace read
-`platform/*`: a namespace never reads another's claims. A claimer's release waits
+(its claims, whichever namespace provides them), nothing else (no namespace reads
+`platform/`): a namespace never reads another's claims. A claimer's release waits
 for its provider's. A claim's
 binding is computed at each compile, never stored: a changed default class, or a
 class's provider, moves its claims to new, empty connections, the data left where it
@@ -498,7 +501,11 @@ was; a provider keeps the data of a claim that is gone.
 In the sandbox, the demo project claims its databases (airflow, hive, polaris,
 superset): no database is declared by hand. Its buckets are not claims: they are the
 platform's S3 store's, a dependency of the platform, created at the bootstrap and named
-by the platform connection `platform-s3`, with the platform's identity. A service that
+by the demo project's connection `platform-s3`, with the platform's identity, which
+the bootstrap writes under the demo's keys only (`demo/s3/platform`): its services
+share one lakehouse (the warehouse buckets of Hive, Polaris, Trino and Spark, Polaris'
+vended credentials), which a claim, a bucket of its own and an identity limited to it,
+does not give. A service that
 claims a bucket instead (`{}` in place of the connection's name) gets one of its own,
 and an identity limited to it, from `s3-system/s3-minio-provisioner`, which creates them
 on that same store, RustFS, which OKDP does not manage, as the provisioning identity the
@@ -799,7 +806,9 @@ scripts/lib/                      # shared by the scripts (topology, catalogs, F
   project has a `project.yaml`, the privileged projects of `platform.yaml` are
   projects of `projects/` or `optional/projects/`, sandbox-charts holds the
   bootstrap (`bootstrap/charts.yaml`, which sandbox-charts checks itself:
-  `scripts/check-bootstrap.sh`). Then the tree compiles (into a temporary output
+  `scripts/check-bootstrap.sh`) and the connections' keys of the secret store are
+  ones its init writes (none under `platform/`, `<namespace>/s3/platform` of a
+  namespace of its `bootstrap/openbao/s3.yaml`). Then the tree compiles (into a temporary output
   tree, or `--output DIR`; its errors and warnings printed as the compile reports
   them; the control plane's ServiceAccount of `platform.yaml` one that its
   namespace's instances render; `--charts DIR`, the compile's chart cache, `okdp-gitops compile --charts

@@ -18,10 +18,11 @@
 # okdp-compiler's tree, reviewed with the platform (no project.yaml, no instance may
 # change a value set here): global.okdp, the platform's settings (the ingress, TLS, the
 # OIDC provider, the secret store, the classes of the claims, the platform's own
-# projects), and the platform's
-# connections, which every instance references by name. The platform's dependencies,
-# installed with helm before anything compiled (bootstrap/, README step 3), are reached
-# through these settings and connections. The console's service catalog is not here:
+# projects), and the platform's connections, which every instance references by name
+# (none in the sandbox: below). The platform's dependencies, installed with helm
+# before anything compiled (bootstrap/, README step 3), are reached through these
+# settings, the claims and the projects' connections. The console's service catalog
+# is not here:
 # see catalogs.yaml. The control plane server reads this file from Git.
 global:
   okdp:
@@ -108,10 +109,11 @@ global:
     #   s3               the instance s3-minio-provisioner of the project s3-system,
     #                    a bucket, a policy and a user limited to it per claim, on
     #                    RustFS of the bootstrap (not OKDP's) through MinIO's admin
-    #                    API. No package claims a bucket by default: the services
-    #                    name the platform's connection platform-s3 (below), and a
-    #                    claim ({} in place of a connection's name) gets a bucket of
-    #                    its own.
+    #                    API. No package claims a bucket by default: a claim ({} in
+    #                    place of a connection's name, or a named claim of its
+    #                    project) gets a bucket of its own; the demo's services name
+    #                    their project's connection platform-s3, the platform's
+    #                    buckets (projects/demo/project.yaml).
     # A provider serves the claims of another namespace with its consent: a class of
     # this file routes every namespace's claims to its provider, the platform's
     # decision, nothing more needed (standard: the demo's databases, of
@@ -132,8 +134,10 @@ global:
           standard: {provider: s3-system/s3-minio-provisioner}
 
     # The platform's secret store, through which credentials cross namespaces: the
-    # platform's S3 access key (the connection platform-s3), the claims' credentials
-    # (the provider's namespace is not its claimers'). OpenBao, installed at the
+    # claims' credentials (the provider's namespace is not its claimers'), the
+    # credentials the bootstrap writes under the namespaces that use them (the
+    # platform's S3 identity under demo/s3/platform, the Keycloak clients' secrets
+    # under <namespace>/keycloak/<client>). OpenBao, installed at the
     # bootstrap (sandbox-charts' bootstrap/openbao, README step 3), reached by
     # External Secrets: with provider set, the compiler writes in each project's
     # namespace a ServiceAccount (serviceAccount) and a SecretStore named store with
@@ -143,9 +147,10 @@ global:
     # OpenBao's policy okdp, templated on that namespace (sandbox-charts'
     # bootstrap/openbao/init.sh): a namespace writes <namespace>/* (a provider, the
     # credentials of each claim under <namespace>/<claim ID>; a project's own
-    # connections, their keys), reads +/<namespace>.* (a claimer, its claims from any
-    # provider) and platform/* (the platform's keys, written at the bootstrap),
-    # nothing else; the namespace platform is reserved. A Vault, or a cloud secret
+    # connections, their keys, the ones the bootstrap writes there), reads
+    # +/<namespace>.* (a claimer, its claims from any provider), nothing else: no
+    # namespace reads platform/, which holds no key; the namespace platform is
+    # reserved. A Vault, or a cloud secret
     # manager, takes OpenBao's place: its provider here, the same policy on its side.
     # Without provider, store is a ClusterSecretStore the platform created: one
     # identity for every namespace, one trust domain. The refresh interval of the
@@ -257,26 +262,14 @@ global:
         - okdp-system
 
 # The platform's connections, in the context of every instance, which references them
-# by name; no project or instance may redefine them.
-connections:
-  # The S3 store of the bootstrap, RustFS (sandbox-charts' bootstrap/rustfs): not
-  # OKDP's, installed with helm before anything compiled as a company installs its own
-  # (README, step 3); any S3-compatible store takes its place by changing these fields
-  # and the key below. Its credentials, keys accessKey and secretKey, are the
-  # platform's identity of the store, in the platform's secret store
-  # (global.okdp.secrets) under remoteKey, a key of platform/, the platform's, written
-  # at the bootstrap (sandbox-charts' bootstrap/openbao/init.sh, from the identity the
-  # RustFS release generates) and read by every namespace: the compiler gives each
-  # instance that references the connection an ExternalSecret of that key, into the
-  # Secret <release>.platform-s3-credentials of its namespace.
-  platform-s3:
-    contract: s3
-    description: The platform's S3 store, RustFS of the bootstrap
-    apiUrl: https://s3.okdp.sandbox
-    internalUrl: http://rustfs-svc.rustfs.svc.cluster.local:9000
-    consoleUrl: https://s3-console.okdp.sandbox
-    region: us-east-1
-    bucket: okdp
-    pathStyle: true
-    secretRef:
-      remoteKey: platform/s3
+# by name; no project or instance may redefine them. None: the S3 store of the
+# bootstrap, RustFS (sandbox-charts' bootstrap/rustfs), is reached through claims
+# (global.okdp.provisioning.s3 above, a bucket and an identity limited to it per
+# claim) or, for a project whose services share the platform's buckets, through a
+# connection of its project with the platform's identity, which the bootstrap writes
+# under that namespace's keys only (sandbox-charts' bootstrap/openbao/s3.yaml): the
+# demo's platform-s3 (projects/demo/project.yaml). A connection of this file is in
+# the context of every namespace, its credentials one key for all (a remoteKey of
+# platform/, which no namespace reads: give each namespace its own key and connection
+# instead).
+connections: {}

@@ -6,6 +6,6 @@
 # user limited to it, the user's keys generated in this namespace and crossing to the
 # claimer's through the platform's secret store, the paths the claim requests seeded;
 # published under the claim's ID. It deploys no store, and nothing when no claim is
-# bound to it (the sandbox's services name platform-s3: no package claims a bucket by
-# default).
+# bound to it (the demo's services name their project's connection platform-s3, the
+# platform's buckets: no package claims a bucket by default).
 store: rustfs

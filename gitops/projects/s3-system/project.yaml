@@ -6,8 +6,8 @@
 # without members (sandbox-charts' bootstrap/keycloak/realm.yaml): the platform's
 # administrators run it.
 description: The provider of the claims of buckets on the platform's S3 store
-# RustFS of the bootstrap (sandbox-charts' bootstrap/rustfs), as platform-s3 of
-# platform.yaml, with another identity: the provisioning identity okdp-provisioner
+# RustFS of the bootstrap (sandbox-charts' bootstrap/rustfs), as platform-s3 of the
+# demo's project.yaml, with another identity: the provisioning identity okdp-provisioner
 # the RustFS release generates (Secret rustfs/rustfs-provisioner), allowed to create
 # buckets, users and policies, nothing on the objects. OpenBao's init writes it under
 # s3-system/s3-provisioner (sandbox-charts' bootstrap/openbao/init.sh,

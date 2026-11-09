@@ -42,7 +42,9 @@
 #      or optional/projects/ (a typo would confine the project it meant);
 #   3. the catalog sandbox-charts holds the bootstrap (bootstrap/charts.yaml, the
 #      platform's prerequisites, README step 3), which it checks itself
-#      (scripts/check-bootstrap.sh);
+#      (scripts/check-bootstrap.sh); the keys of the secret store the connections
+#      name are ones its init writes and the namespaces read: none under platform/,
+#      <namespace>/s3/platform of a namespace of its bootstrap/openbao/s3.yaml;
 #   4. the tree compiles (as scripts/compile.sh does: okdp-gitops compile, every
 #      instance compiled together with its package of the catalogs, each claim bound
 #      to its provider), into the output tree that scripts/configure.sh --push would
@@ -90,7 +92,7 @@ while [[ $# -gt 0 ]]; do
     --catalog) CATALOGS+=("$2"); shift 2 ;;
     --charts) CHARTS="$(mkdir -p "$2" && cd "$2" && pwd)"; shift 2 ;;
     --helm) HELM=true; shift ;;
-    -h|--help) sed -n '18,73p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,75p' "$0"; exit 0 ;;
     *) echo "check: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -250,6 +252,26 @@ if [[ -z "${CATALOG_DIRS[$BOOTSTRAP_CATALOG]:-}" ]]; then
   fail "catalogs.yaml: no catalog $BOOTSTRAP_CATALOG, whose bootstrap/ holds the platform's prerequisites"
 elif [[ ! -f "${CATALOG_DIRS[$BOOTSTRAP_CATALOG]}/bootstrap/charts.yaml" ]]; then
   fail "catalog $BOOTSTRAP_CATALOG: no bootstrap/charts.yaml"
+else
+  # The keys of the platform's secret store the connections name are the ones the
+  # bootstrap writes and the namespaces read (its bootstrap/openbao/init.sh): no
+  # namespace reads platform/, and the platform's S3 identity is under
+  # <namespace>/s3/platform of the namespaces of bootstrap/openbao/s3.yaml only.
+  s3_consumers="${CATALOG_DIRS[$BOOTSTRAP_CATALOG]}/bootstrap/openbao/s3.yaml"
+  while IFS= read -r f; do
+    while IFS= read -r key; do
+      case "$key" in
+        platform/*)
+          fail "${f#"$ROOT"/}: secretRef.remoteKey $key: no namespace reads platform/ in the platform's secret store (bootstrap/openbao/init.sh of $BOOTSTRAP_CATALOG): a key of the namespaces that read it" ;;
+        */s3/platform)
+          if ! { [[ -f "$s3_consumers" ]] \
+                 && NS="${key%%/*}" yq -e '[(.namespaces // [])[] | select(. == strenv(NS))] | length > 0' "$s3_consumers" >/dev/null 2>&1; }; then
+            fail "${f#"$ROOT"/}: secretRef.remoteKey $key: the bootstrap writes the platform's S3 identity there for the namespaces of bootstrap/openbao/s3.yaml of $BOOTSTRAP_CATALOG only, ${key%%/*} is none"
+          fi ;;
+      esac
+    done < <(yq -r '.connections // {} | to_entries[] | .value.secretRef.remoteKey // ""' "$f" | grep -v '^$' || true)
+  done < <(find "$ROOT/platform.yaml" "$ROOT/projects" "$ROOT/optional" \
+    \( -name platform.yaml -o -name project.yaml -o -name connections.yaml \) -type f 2>/dev/null | sort)
 fi
 
 # ------------------------------------------------------------- 4. compile

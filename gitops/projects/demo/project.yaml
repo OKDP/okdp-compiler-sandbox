@@ -1,12 +1,37 @@
 # The context of the demo project's instances (level 1, over platform.yaml): its
 # settings under global, its classes beside the platform's (global.okdp.provisioning),
 # its connections and its named claims (claims.<name>: {contract, class or provider,
-# request}, shared by its instances). The demo needs none of its own: its services claim
-# databases of their own of the platform's class, and their object store is the
-# platform's connection platform-s3.
+# request}, shared by its instances). Its services claim databases of their own of the
+# platform's class; their object store is the connection platform-s3 below.
 # Its people: no access, the default, {okdp-project-demo: editor}, the Keycloak group
 # of the demo users bob, mark, nina and grace (sandbox-charts'
 # bootstrap/keycloak/realm.yaml): Argo CD's editor of its Applications, the Forgejo
 # team of its repository, edit of its namespace. Add viewers or admins with
 # access: {okdp-project-demo: editor, <group>: viewer}.
 description: Demonstration project, full data chain
+connections:
+  # The S3 store of the bootstrap, RustFS (sandbox-charts' bootstrap/rustfs), with the
+  # platform's identity: s3:* on the platform's buckets (okdp, lakehouse, bronze,
+  # silver, gold) and sts:AssumeRole, Polaris' vended credentials. The demo's
+  # services share one lakehouse: hive's warehouse and Spark's event logs in okdp,
+  # Polaris' catalogs in lakehouse, silver and gold, read by Trino and the PySpark
+  # sessions, JupyterHub's file browser on bronze, silver and gold, which a claim (a
+  # bucket of its own, an identity limited to it, no STS) does not give. Its
+  # credentials, keys accessKey and secretKey, are in the platform's secret store
+  # under the demo's keys, demo/s3/platform, which the bootstrap writes for the
+  # namespaces of sandbox-charts' bootstrap/openbao/s3.yaml only (init.sh) and which
+  # no other namespace reads: the compiler gives each instance that references the
+  # connection an ExternalSecret of that key, into the Secret
+  # <release>.platform-s3-credentials of the namespace. Any S3-compatible store takes
+  # its place by changing these fields and that key.
+  platform-s3:
+    contract: s3
+    description: The platform's S3 store, RustFS of the bootstrap, with the platform's identity
+    apiUrl: https://s3.okdp.sandbox
+    internalUrl: http://rustfs-svc.rustfs.svc.cluster.local:9000
+    consoleUrl: https://s3-console.okdp.sandbox
+    region: us-east-1
+    bucket: okdp
+    pathStyle: true
+    secretRef:
+      remoteKey: demo/s3/platform

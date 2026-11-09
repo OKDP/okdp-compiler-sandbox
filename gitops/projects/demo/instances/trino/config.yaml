@@ -1,4 +1,5 @@
-# The catalogs' store: the platform's S3 connection platform-s3, its credentials.
+# The catalogs' store: the project's S3 connection platform-s3 (project.yaml), its
+# credentials.
 # The medallion layout of okdp-examples: bronze is the hive catalog (the hive-metastore
 # instance hive, its output named after it), silver and gold are warehouses of the Polaris
 # instance polaris provisioned by okdp-examples (gitops/optional/), which also creates the
