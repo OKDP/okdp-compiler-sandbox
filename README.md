@@ -208,7 +208,7 @@ GitOps user ──────────────────────�
 - [Docker](https://docs.docker.com/get-docker/) or a compatible container runtime, [Kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation), [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/), [Helm](https://helm.sh/docs/intro/install/) (3.8 or later) and `git`.
 - For Argo CD: nothing more (tested with v3.4.2). For Flux: the [Flux CLI](https://fluxcd.io/flux/installation/) (tested with v2.9.5).
 - For step 3, `scripts/bootstrap.sh`: [yq](https://github.com/mikefarah/yq) v4, `jq` (the CoreDNS patch, OpenBao's init), `awk` and `git` (sandbox-charts, where the bootstrap lives).
-- To configure the sandbox and change the layout by hand: `okdp-gitops` ([okdp-gitops](https://github.com/OKDP/okdp-gitops), `make build`), [yq](https://github.com/mikefarah/yq) v4, `curl` and `jq`. The scripts read the service catalogs from checkouts of [platform-charts](https://github.com/OKDP/platform-charts), [sandbox-charts](https://github.com/OKDP/sandbox-charts) and [community-charts](https://github.com/OKDP/community-charts) next to this repository when there are some (at the ref [`catalogs.yaml`](gitops/catalogs.yaml) names), else from GitHub.
+- To configure the sandbox and change the layout by hand: `okdp-gitops` ([okdp-gitops](https://github.com/OKDP/okdp-gitops), `make build`), [yq](https://github.com/mikefarah/yq) v4, `curl` and `jq`. The scripts read the service catalogs from checkouts of [platform-charts](https://github.com/OKDP/platform-charts), [sandbox-charts](https://github.com/OKDP/sandbox-charts) and [community-charts](https://github.com/OKDP/community-charts) next to this repository when there are some (at the commit [`catalogs.yaml`](gitops/catalogs.yaml) pins), else from GitHub.
 
 ## Quick start
 
@@ -224,7 +224,7 @@ cd okdp-sandbox
 
 The service catalogs, sandbox-charts' bootstrap among them (step 3), are read from
 checkouts next to this one when there are (`../platform-charts`, `../sandbox-charts`,
-`../community-charts`, at the `ref` of [`gitops/catalogs.yaml`](gitops/catalogs.yaml)),
+`../community-charts`, at the commit [`gitops/catalogs.yaml`](gitops/catalogs.yaml) pins),
 else from GitHub.
 
 ### 2. Create the kind cluster
@@ -313,12 +313,26 @@ there, it comes from a registry. No okdp-gitops image is published yet
 [okdp-compiler](https://github.com/OKDP/okdp-compiler) next to this repository, and serve
 it from a registry of your own on the kind network, `okdp-registry:5000` from the
 cluster (plain HTTP), `127.0.0.1:5001` from your machine; the node's containerd pulls
-from it too (the control plane images may be pushed there instead of `kind load`):
+from it too (the control plane images may be pushed there instead of `kind load`).
+The registry has no authentication and sits on the kind network, which the pods of
+the tenants' projects reach (their egress is open): the CI's image receives the
+output repository's write token, so it is named by its **digest**, and the registry
+is made read-only once the image is pushed (two steps: push into a writable
+registry, then recreate it read-only on the same volume), so that nothing a pod
+pushes later is ever pulled as the CI's image:
 
 ```sh
-docker run -d --restart=always --name okdp-registry --network kind -p 127.0.0.1:5001:5000 registry:2
+docker run -d --restart=always --name okdp-registry --network kind -p 127.0.0.1:5001:5000 \
+  -v okdp-registry-data:/var/lib/registry registry:2
 docker build --build-context okdp-compiler=../okdp-compiler -t 127.0.0.1:5001/okdp-gitops:dev ../okdp-gitops
 docker push 127.0.0.1:5001/okdp-gitops:dev
+# the digest of the pushed image (sha256:...), set in the runner's values below
+docker inspect --format '{{index .RepoDigests 0}}' 127.0.0.1:5001/okdp-gitops:dev | cut -d@ -f2
+# the same registry, read-only, on the same volume
+docker rm -f okdp-registry
+docker run -d --restart=always --name okdp-registry --network kind -p 127.0.0.1:5001:5000 \
+  -v okdp-registry-data:/var/lib/registry \
+  -e REGISTRY_STORAGE_MAINTENANCE_READONLY='{"enabled":true}' registry:2
 docker exec okdp-sandbox-control-plane mkdir -p /etc/containerd/certs.d/okdp-registry:5000
 docker exec -i okdp-sandbox-control-plane tee /etc/containerd/certs.d/okdp-registry:5000/hosts.toml >/dev/null <<EOF
 server = "http://okdp-registry:5000"
@@ -335,13 +349,17 @@ cluster's DNS, Forgejo and the internet's port 443, no private range. An image o
 another registry is set there, in the checkout next to this repository (step 3 with
 `--dir ../sandbox-charts/bootstrap`), its registry's address and port added to
 `networkPolicy.registries` when it is on a private range or another port
-(`scripts/e2e-kind.sh` does the same with `E2E_GITOPS_IMAGE`, the address of the
-registry's host, or `E2E_GITOPS_REGISTRY_CIDR`):
+(`scripts/e2e-kind.sh` does the same with `E2E_GITOPS_IMAGE`, which carries the
+digest, `okdp-registry:5000/okdp-gitops:dev@sha256:...`, the address of the
+registry's host, or `E2E_GITOPS_REGISTRY_CIDR`). The digest is required: the
+chart refuses to render without it, and the label it writes is
+`repository[:tag]@digest`:
 
 ```yaml
 okdpGitopsImage:
   repository: okdp-registry:5000/okdp-gitops
   tag: dev
+  digest: sha256:...   # the digest printed above
 insecureRegistries: [okdp-registry:5000]
 networkPolicy:
   registries:
@@ -382,11 +400,16 @@ scripts/bootstrap.sh
 read ([`gitops/catalogs.yaml`](gitops/catalogs.yaml): sandbox-charts at its `ref`, from
 the checkout next to this repository, else GitHub; `--catalog sandbox-charts=SRC` or
 `OKDP_CATALOGS` for another), so that the prerequisites and the packages are of one
-commit. `--dir DIR` installs a bootstrap directory as it is, uncommitted changes
-included (`--dir ../sandbox-charts/bootstrap`). It applies the namespaces first,
+commit. Its scripts run with your cluster-admin: from GitHub, `bootstrap/` is that
+of the commit `catalogs.yaml` pins, fetched by its hash, and a branch or a tag as
+the `ref` is refused unless `--allow-branch` (`scripts/bump-catalogs.sh` moves the
+pins). `--dir DIR` installs a bootstrap directory as it is, uncommitted changes
+included (`--dir ../sandbox-charts/bootstrap`); it and the checkout next to this
+repository are your own input, read as they are. It applies the namespaces first,
 with their Pod Security levels (`bootstrap/namespaces.yaml`: `baseline` enforced,
 `restricted` warned and audited, `forgejo` alone `privileged` for the CI runner's
-Docker daemon), which the releases' `--create-namespace` find. It needs `helm`, `yq`,
+Docker daemon; `argocd` and `flux-system`, the engines' namespaces, are labelled the
+same), which the releases' `--create-namespace` find. It needs `helm`, `yq`,
 `jq`, `awk` and `git`.
 
 Their ingresses (`keycloak`, `s3`, `s3-console`, `forgejo` `.okdp.sandbox`) are served
@@ -489,9 +512,14 @@ Then choose **one** engine (Argo CD and Flux read the output repository).
 ### 5a. Install with Argo CD
 
 ```sh
-kubectl create namespace argocd
-kubectl apply -n argocd --server-side --force-conflicts \
-  -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.2/manifests/install.yaml
+# the namespace exists, with its Pod Security levels (step 3, bootstrap/namespaces.yaml)
+kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+# Argo CD's manifest, checked before it is applied (a tag can move): <sha256> is
+# ARGOCD_INSTALL_SHA256 of scripts/e2e-kind.sh, pinned with ARGOCD_VERSION.
+curl -fsSLo argocd-install.yaml \
+  https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.2/manifests/install.yaml
+echo "<sha256>  argocd-install.yaml" | sha256sum -c -
+kubectl apply -n argocd --server-side --force-conflicts -f argocd-install.yaml
 # The health of Applications (the sync waves wait for healthy Applications), the sign-in
 # with Keycloak and its roles. Keycloak's certificate is checked against the platform's
 # CA bundle, which trust-manager writes in the new namespace (Secret certs-bundle):
@@ -531,6 +559,8 @@ which sets `gitops.engine` in
 commit and push it to Forgejo as above (`configure.sh --push`). Then:
 
 ```sh
+# The manifests embedded in the Flux CLI, of its version: no --version, which would
+# download another version's from GitHub, unchecked.
 flux install --components=source-controller,kustomize-controller,helm-controller
 # The chart version must not carry the OCI digest (see gitops/README.md).
 # Cross-namespace source references disabled and default service account locked
@@ -735,6 +765,7 @@ deployed as OKDP instances, a project's own store for instance.
 kind delete cluster --name okdp-sandbox
 rm /tmp/okdp-sandbox-config.yaml
 docker rm -f okdp-registry   # the registry of the okdp-gitops image (step 2)
+docker volume rm okdp-registry-data
 ```
 
 If you trusted the sandbox CA, remove it too: see

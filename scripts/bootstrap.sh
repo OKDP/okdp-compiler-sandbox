@@ -65,11 +65,22 @@
 # Secrets kept when they exist): run it again to upgrade. Then scripts/configure.sh --push
 # (README, step 4).
 #
-# Usage: bootstrap.sh [--dir DIR] [--catalog NAME=SRC]...
+# Its scripts (coredns/patch.sh, keycloak/client-secrets.sh, openbao/init.sh) run with
+# the operator's rights, cluster-admin: read from a Git URL (GitHub, --catalog
+# sandbox-charts=URL), bootstrap/ is that of the commit catalogs.yaml pins as
+# sandbox-charts' ref, fetched by its hash, never a branch's head; a branch or a tag
+# as that ref is refused unless --allow-branch. A directory (--dir, --catalog
+# sandbox-charts=DIR) or the checkout next to this repository (read at the ref) is
+# the operator's own input, read as it is.
+#
+# Usage: bootstrap.sh [--dir DIR] [--catalog NAME=SRC]... [--allow-branch]
 #   --dir DIR             the bootstrap directory, its values and manifests (default:
 #                         bootstrap/ of the catalog sandbox-charts, as above)
 #   --catalog NAME=SRC    where a catalog is read from (a directory, read as it is, or
 #                         a Git URL, read at its ref)
+#   --allow-branch        read bootstrap/ from a Git URL at a branch or a tag of
+#                         catalogs.yaml (its head when it runs: what it runs is
+#                         whatever the branch holds then)
 # Requires kubectl, helm (3.8 or later: OCI charts), yq v4, jq and awk (the CoreDNS
 # patch, OpenBao's init), git (the catalog).
 
@@ -80,11 +91,13 @@ SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPTS/../gitops" && pwd)"
 DIR=""
 CATALOGS=()
+ALLOW_BRANCH=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) DIR="$(cd "$2" && pwd)"; shift 2 ;;
     --catalog) CATALOGS+=("$2"); shift 2 ;;
-    -h|--help) sed -n '18,74p' "$0"; exit 0 ;;
+    --allow-branch) ALLOW_BRANCH=true; shift ;;
+    -h|--help) sed -n '18,85p' "$0"; exit 0 ;;
     *) echo "bootstrap: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -96,6 +109,12 @@ if [[ -z "$DIR" ]]; then
   source "$SCRIPTS/lib/topology.sh"
   work_init ""
   catalog_sources_init "${CATALOGS[@]}"
+  # From a Git URL, the commit pinned: a branch's head would run whatever it holds.
+  read -r kind src <<<"$(catalog_origin "$BOOTSTRAP_CATALOG")"
+  ref="$(catalog_ref "$BOOTSTRAP_CATALOG")"
+  if [[ "$kind" == url ]] && ! catalog_ref_is_commit "$ref" && ! $ALLOW_BRANCH; then
+    die "catalog $BOOTSTRAP_CATALOG: ref '$ref' of catalogs.yaml is not a commit hash, and bootstrap/ of $src runs with your cluster-admin: pin the commit (scripts/bump-catalogs.sh), or --allow-branch, or --catalog $BOOTSTRAP_CATALOG=DIR, or --dir DIR"
+  fi
   bootstrap_resolve
   DIR="$BOOTSTRAP"
 fi

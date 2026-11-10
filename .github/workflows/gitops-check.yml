@@ -27,8 +27,8 @@
 #
 # okdp-gitops is built from its repository, with okdp-compiler next to it (its go.mod
 # replaces it). The service catalogs of gitops/catalogs.yaml
-# (platform-charts, sandbox-charts, community-charts) are cloned next to this
-# repository at the ref the catalog names, where scripts/check.sh reads them. The
+# (platform-charts, sandbox-charts, community-charts) are fetched next to this
+# repository at the commit the catalog pins, where scripts/check.sh reads them. The
 # compile pulls the upstream charts of the compiled umbrellas into its chart cache
 # (okdp-gitops compile --charts, scripts/check.sh --charts), helm the charts it
 # renders (helm dependency build): nothing OKDP is pulled from a registry.
@@ -87,11 +87,10 @@ jobs:
           }
           fetch okdp-gitops "${OKDP_GITOPS_REF}"
           fetch okdp-compiler "${OKDP_COMPILER_REF}"
-          # The catalogs, at the ref gitops/catalogs.yaml names (yq is preinstalled).
+          # The catalogs, at the commit gitops/catalogs.yaml pins (yq is
+          # preinstalled; scripts/check.sh warns of a branch, fetched all the same).
           yq -r '.repositories[] | [.name, .ref] | @tsv' gitops/catalogs.yaml \
-            | while IFS=$'\t' read -r name ref; do
-                git clone --quiet --single-branch --branch "${ref}" "https://github.com/OKDP/${name}.git" "../${name}"
-              done
+            | while IFS=$'\t' read -r name ref; do fetch "${name}" "${ref}"; done
 
       - name: Set up Go 🛠️
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0

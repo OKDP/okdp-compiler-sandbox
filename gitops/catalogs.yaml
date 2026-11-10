@@ -15,13 +15,19 @@
 #
 
 # The catalog repositories (okdp-gitops' file, beside platform.yaml: the compiler does
-# not read it), fetched by every compile, and the console's menu, read and written by
+# not read it), fetched by every compile (the CI's, over https at
+# CI_FORGEJO_URL of scripts/lib/topology.sh: the platform's CA bundle is trusted by the
+# job and by the server), and the console's menu, read and written by
 # the control plane server through Git. Not a values layer.
 # repositories: the catalogs of service packages, Git repositories holding
 # catalog/<service>/<version>/ (an instance.yaml names <service> and <version>) and
-# contracts/<contract>.schema.json, read at ref (a branch or a tag). A service name
-# is unique across the catalogs, a contract two catalogs hold the same bytes in both.
-# scripts/configure.sh --push copies them to Forgejo:
+# contracts/<contract>.schema.json, read at ref (a branch, a tag or a commit). A
+# service name is unique across the catalogs, a contract two catalogs hold the same
+# bytes in both. The sandbox pins each at a commit (its full hash): a branch moves,
+# and scripts/bootstrap.sh runs sandbox-charts' bootstrap/ scripts with cluster-admin
+# (it refuses a branch read from GitHub unless --allow-branch; scripts/check.sh warns
+# of one); scripts/bump-catalogs.sh moves the pins.
+# scripts/configure.sh --push copies them to Forgejo, each commit as the copy's main:
 #   platform-charts   OKDP's data services (airflow, trino, polaris, superset...)
 #   sandbox-charts    the platform services of the sandbox: cnpg-postgresql, the
 #                     provider of the claims of databases, s3-minio-provisioner,
@@ -35,14 +41,14 @@
 #                     (optional/projects)
 repositories:
   - name: platform-charts
-    url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/platform-charts.git
-    ref: feat/claim-provisioner
+    url: https://forgejo.okdp.sandbox/okdp/platform-charts.git
+    ref: 02af3f82b83a674cccbbd8a89bbd40a8178d44f9
   - name: sandbox-charts
-    url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/sandbox-charts.git
-    ref: feat/claim-provisioner
+    url: https://forgejo.okdp.sandbox/okdp/sandbox-charts.git
+    ref: e1e0873d03fec5cc0fe37346af4c90695074b4f9
   - name: community-charts
-    url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/community-charts.git
-    ref: feat/claim-provisioner
+    url: https://forgejo.okdp.sandbox/okdp/community-charts.git
+    ref: 280a00ee8ebf93bfe6f17272f266627d24a0ca66
 # Console sidebar, one section per entry, in this order. A service sits in
 # the section it is listed under. Icons are PrimeIcons names. A service's versions
 # are the catalog/<service>/<version>/ directories of its catalog; the console

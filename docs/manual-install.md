@@ -130,16 +130,21 @@ sandbox-charts and community-charts. The contracts of the connections are the un
 the catalogs' `contracts/` directories, each catalog a repository of the tree
 (`okdp-compile --repository`).
 
+The `ref` is a commit, fetched by its hash (no branch: what `catalogs.yaml` pins is
+what is installed, sandbox-charts' `bootstrap/` scripts among it):
+
 ```sh
 for name in platform-charts sandbox-charts community-charts; do
   ref=$(yq -r ".repositories[] | select(.name == \"$name\") | .ref" "$OKDP/catalogs.yaml")
-  git clone --quiet --depth 1 --branch "$ref" "https://github.com/OKDP/$name.git" "$WORK/catalogs/$name"
+  git init -q "$WORK/catalogs/$name"
+  git -C "$WORK/catalogs/$name" fetch -q --depth 1 "https://github.com/OKDP/$name.git" "$ref"
+  git -C "$WORK/catalogs/$name" checkout -q FETCH_HEAD
 done
 ls "$WORK"/catalogs/*/contracts
 ```
 
 If you have checkouts of the catalogs next to this repository, you can export their `ref`
-instead of cloning them: replace the `git clone` line with
+instead of fetching them: replace the three `git` lines with
 `mkdir -p "$WORK/catalogs/$name" && git -C "../$name" archive "$ref" | tar -x -C "$WORK/catalogs/$name"`.
 
 ## Step 5. Define the helpers

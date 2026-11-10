@@ -25,6 +25,6 @@ permissions:
 
 jobs:
   commits:
-    # SECURITY (CI-01): @main is a mutable ref; pin to a commit SHA of
-    # OKDP/gh-workflows once that repository's release flow is settled.
-    uses: OKDP/gh-workflows/.github/workflows/conventional-commits.yml@main
+    # SECURITY (CI-01): pinned by commit, main's on 2026-11-04 (a branch moves).
+    # To bump: git ls-remote https://github.com/OKDP/gh-workflows refs/heads/main
+    uses: OKDP/gh-workflows/.github/workflows/conventional-commits.yml@52169486701c7ec78ef3e1edbf914580570a962b # main

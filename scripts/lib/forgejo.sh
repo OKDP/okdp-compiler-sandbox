@@ -387,8 +387,10 @@ forgejo_output_workflow() {
 
 # forgejo_push_catalogs: copies each catalog of catalogs.yaml that lives on
 # this Forgejo (its url) from its source (catalog_origin: a checkout, pushed at the
-# catalog's ref, or a Git URL), at the same ref; forced, the copy follows its source.
-# A catalog elsewhere is left alone (the server reads it from its url).
+# catalog's ref, or a Git URL), at the same ref, a commit (catalogs.yaml pins one)
+# pushed as the copy's main, where the CI and the console fetch it by its hash;
+# forced, the copy follows its source. A catalog elsewhere is left alone (the server
+# reads it from its url).
 forgejo_push_catalogs() {
   local name url ref kind src base path owner repo commit target clone
   base="$(forgejo_cluster_url)"
@@ -404,16 +406,26 @@ forgejo_push_catalogs() {
     FORGEJO_CATALOG_REPOS+=("$owner/$repo")
     if [[ "$kind" == url ]]; then
       clone="$WORK/catalog-sources/$name"
-      if $DRY_RUN; then dry "clone $ref of $src, push it to $owner/$repo"; continue; fi
-      rm -rf "$clone"
-      git clone -q --bare --single-branch --branch "$ref" "$src" "$clone" \
-        || die "catalog $name: cannot clone $ref of $src (--catalog $name=DIR|URL)"
+      if $DRY_RUN; then dry "fetch $ref of $src, push it to $owner/$repo"; continue; fi
+      if catalog_ref_is_commit "$ref"; then
+        catalog_fetch "$src" "$ref" "$clone" \
+          || die "catalog $name: cannot fetch the commit $ref of $src (--catalog $name=DIR|URL)"
+      else
+        rm -rf "$clone"
+        git clone -q --bare --single-branch --branch "$ref" "$src" "$clone" \
+          || die "catalog $name: cannot clone $ref of $src (--catalog $name=DIR|URL)"
+      fi
       src="$clone"
     fi
     git -C "$src" rev-parse --git-dir >/dev/null 2>&1 || die "catalog $name: $src is not a Git repository, cannot push it"
     commit="$(catalog_commit "$src" "$ref")" || die "catalog $name: no $ref in $src"
-    target="refs/heads/$ref"
-    if git -C "$src" show-ref -q --verify "refs/tags/$ref"; then target="refs/tags/$ref"; fi
+    if catalog_ref_is_commit "$ref"; then
+      target=refs/heads/main
+    elif git -C "$src" show-ref -q --verify "refs/tags/$ref"; then
+      target="refs/tags/$ref"
+    else
+      target="refs/heads/$ref"
+    fi
     forgejo_push_ref "$src" "$commit" "$target" "$owner" "$repo" --force
   done < <(catalog_list)
 }

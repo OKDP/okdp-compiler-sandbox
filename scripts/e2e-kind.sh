@@ -37,7 +37,7 @@
 # What is pushed is a copy of the layout at E2E_REF, adapted for the test:
 #   - scripts/configure.sh sets the control plane server's gitops.engine to the engine
 #     under test and the topology to E2E_TOPOLOGY;
-#   - E2E_SERVER_IMAGE and E2E_UI_IMAGE (repository:tag) replace the images of the
+#   - E2E_SERVER_IMAGE and E2E_UI_IMAGE (repository[:tag][@sha256:...]) replace the images of the
 #     control plane (load them with E2E_LOAD_IMAGES), E2E_GITOPS_IMAGE the
 #     okdp-gitops image of the CI's jobs (sandbox-charts' bootstrap/forgejo-runner), which the runner's
 #     own Docker daemon pulls from its registry (an image loaded into the node is not
@@ -65,21 +65,27 @@
 #   E2E_REF       Git ref of this repository to deploy, default HEAD (commit first)
 #   E2E_TOPOLOGY  io (default) or split (scripts/configure.sh --topology)
 #   OKDP_CATALOGS "NAME=DIR|URL ..." where the catalogs are read from
-#   E2E_SERVER_IMAGE, E2E_UI_IMAGE   images of the control plane (repository:tag)
-#   E2E_GITOPS_IMAGE         the okdp-gitops image of the CI's jobs (repository:tag, in a registry)
+#   E2E_SERVER_IMAGE, E2E_UI_IMAGE   images of the control plane (repository[:tag][@sha256:...])
+#   E2E_GITOPS_IMAGE         the okdp-gitops image of the CI's jobs, in a registry, by digest
+#                            (repository[:tag]@sha256:...: it receives the output repository's
+#                            write token; without a digest, the one the local Docker holds
+#                            for that reference, else the script stops)
 #   E2E_GITOPS_REGISTRY_CIDR the runner's egress to that registry (a CIDR, its port
 #                            the image's registry's), default its host's address
 #   OKDP_GITOPS   the okdp-gitops binary (default: okdp-gitops in PATH)
 #   E2E_LOAD_IMAGES          images loaded into the kind node (space separated)
 #   E2E_SKIP_PROJECTS        projects left out (space separated), e.g. demo
 #   ARGOCD_VERSION  default v3.4.2        FLUX_VERSION  default v2.9.5
+#   ARGOCD_INSTALL_SHA256  the sha256 of ARGOCD_VERSION's manifests/install.yaml,
+#                 pinned with it (the manifest is applied only if it matches); the
+#                 Flux CLI must be of FLUX_VERSION (its embedded manifests installed)
 #   E2E_TIMEOUT   seconds, default 2400
 # Afterwards: KUBECONFIG=$E2E_DIR/<engine>.kubeconfig kubectl ...
 
 set -euo pipefail
 
 ACTION="${1:-}"; ENGINE="${2:-}"
-[[ "$ACTION" =~ ^(up|push|down)$ && "$ENGINE" =~ ^(argocd|flux)$ ]] || { sed -n '18,77p' "$0"; exit 2; }
+[[ "$ACTION" =~ ^(up|push|down)$ && "$ENGINE" =~ ^(argocd|flux)$ ]] || { sed -n '18,80p' "$0"; exit 2; }
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPTS/../gitops" && pwd)"
@@ -94,6 +100,10 @@ E2E_UI_IMAGE="${E2E_UI_IMAGE:-}"
 E2E_GITOPS_IMAGE="${E2E_GITOPS_IMAGE:-}"
 E2E_GITOPS_REGISTRY_CIDR="${E2E_GITOPS_REGISTRY_CIDR:-}"
 ARGOCD_VERSION="${ARGOCD_VERSION:-v3.4.2}"
+# sha256 of https://raw.githubusercontent.com/argoproj/argo-cd/$ARGOCD_VERSION/manifests/install.yaml
+# (curl -fsSL "$url" | sha256sum, checked against the release). Update both together,
+# here and in .github/workflows/deploy-validation.yml.
+ARGOCD_INSTALL_SHA256="${ARGOCD_INSTALL_SHA256:-69114b8c9eb48a1d08598e6f654a0869b10ae902456ea4b70796cb563760f5ec}"
 FLUX_VERSION="${FLUX_VERSION:-v2.9.5}"
 E2E_TIMEOUT="${E2E_TIMEOUT:-2400}"
 CLUSTER="${ENGINE/#flux/fluxcd}"   # argocd, fluxcd
@@ -132,7 +142,21 @@ runner_registry() {
     "$BOOTSTRAP_COPY/forgejo-runner/values.yaml"
 }
 
-# prepare_copy: $COPY = the repository at E2E_REF with the test adaptations,
+# split_image REFERENCE: IMAGE_REPO, IMAGE_TAG and IMAGE_DIGEST of
+# repository[:tag][@sha256:...]: the digest after the first @, then the tag at the last
+# : of what precedes it, if that : follows the last / (else it is a registry's port).
+split_image() {
+  local ref="$1" name
+  IMAGE_DIGEST="" IMAGE_TAG=""
+  if [[ "$ref" == *@* ]]; then IMAGE_DIGEST="${ref#*@}"; ref="${ref%%@*}"; fi
+  name="${ref##*/}"
+  if [[ "$name" == *:* ]]; then IMAGE_TAG="${name##*:}"; ref="${ref%:*}"; fi
+  IMAGE_REPO="$ref"
+  [[ -z "$IMAGE_DIGEST" || "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || { log "image $1: the digest must be sha256:<64 hex>"; exit 1; }
+}
+
+# prepare_copy: $COPY =the repository at E2E_REF with the test adaptations,
 # committed on top of E2E_REF (a fresh history each time: the push is forced), and
 # $BOOTSTRAP_COPY = the bootstrap/ of the catalog sandbox-charts as the copy's
 # catalogs.yaml reads it (OKDP_CATALOGS, else the checkout next to this repository,
@@ -156,16 +180,28 @@ prepare_copy() {
   for c in server ui; do
     image="E2E_${c^^}_IMAGE"; image="${!image}"
     [[ -n "$image" ]] || continue
-    REPO="${image%:*}" TAG="${image##*:}" yq -i '.imageRepository = strenv(REPO) | .imageTag = strenv(TAG)' \
+    split_image "$image"
+    # imageTag is the tag of repository:tag, which takes @sha256:... after it.
+    REPO="$IMAGE_REPO" TAG="${IMAGE_TAG:-latest}${IMAGE_DIGEST:+@$IMAGE_DIGEST}" \
+      yq -i '.imageRepository = strenv(REPO) | .imageTag = strenv(TAG)' \
       "$G/projects/okdp-system/instances/okdp-control-plane-$c/config.yaml"
   done
   if [[ -n "$E2E_GITOPS_IMAGE" ]]; then
-    REPO="${E2E_GITOPS_IMAGE%:*}" TAG="${E2E_GITOPS_IMAGE##*:}" \
-      yq -i '.okdpGitopsImage.repository = strenv(REPO) | .okdpGitopsImage.tag = strenv(TAG)' \
+    split_image "$E2E_GITOPS_IMAGE"
+    # The CI's image receives the output repository's write token: by digest, the
+    # runner's chart refuses to render without one. Not given: the digest the local
+    # Docker holds for that reference (docker push sets it), else an error.
+    if [[ -z "$IMAGE_DIGEST" ]]; then
+      IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$E2E_GITOPS_IMAGE" 2>/dev/null | sed -n 's/^[^@]*@//p' || true)"
+      [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
+        || { log "E2E_GITOPS_IMAGE has no digest: set it to <repository>[:tag]@sha256:... (docker inspect --format '{{index .RepoDigests 0}}' <image>, after docker push)"; exit 1; }
+    fi
+    REPO="$IMAGE_REPO" TAG="$IMAGE_TAG" DIGEST="$IMAGE_DIGEST" \
+      yq -i '.okdpGitopsImage.repository = strenv(REPO) | .okdpGitopsImage.tag = strenv(TAG) | .okdpGitopsImage.digest = strenv(DIGEST)' \
       "$BOOTSTRAP_COPY/forgejo-runner/values.yaml"
     # The registry, when the image names one (a host: a dot or a port).
-    registry="${E2E_GITOPS_IMAGE%%/*}"
-    if [[ "$E2E_GITOPS_IMAGE" == */* && "$registry" == *[.:]* ]]; then
+    registry="${IMAGE_REPO%%/*}"
+    if [[ "$IMAGE_REPO" == */* && "$registry" == *[.:]* ]]; then
       REG="$registry" yq -i '.insecureRegistries = ((.insecureRegistries // []) + [strenv(REG)] | unique)' \
         "$BOOTSTRAP_COPY/forgejo-runner/values.yaml"
       runner_registry "$registry"
@@ -241,9 +277,17 @@ expected="$(find "$G/projects" -path '*/instances/*/instance.yaml' | wc -l)"
 
 if [[ "$ENGINE" == argocd ]]; then
   log "installing Argo CD $ARGOCD_VERSION"
+  # Its manifest downloaded, then checked against the sha256 pinned with the version
+  # (a tag of the repository can move): applied only if it matches.
+  manifest="$E2E_DIR/argocd-install-$ARGOCD_VERSION.yaml"
+  curl -fsSLo "$manifest" "https://raw.githubusercontent.com/argoproj/argo-cd/$ARGOCD_VERSION/manifests/install.yaml"
+  sum="$(sha256sum "$manifest" | cut -d' ' -f1)"
+  [[ -n "$ARGOCD_INSTALL_SHA256" ]] \
+    || { log "ERROR: no ARGOCD_INSTALL_SHA256 for Argo CD $ARGOCD_VERSION (its install.yaml downloaded is $sum: check it, then pin it with the version)"; exit 1; }
+  [[ "$sum" == "$ARGOCD_INSTALL_SHA256" ]] \
+    || { log "ERROR: Argo CD $ARGOCD_VERSION install.yaml: sha256 $sum, not the pinned ARGOCD_INSTALL_SHA256 $ARGOCD_INSTALL_SHA256"; exit 1; }
   kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-  kubectl apply -n argocd --server-side --force-conflicts \
-    -f "https://raw.githubusercontent.com/argoproj/argo-cd/$ARGOCD_VERSION/manifests/install.yaml"
+  kubectl apply -n argocd --server-side --force-conflicts -f "$manifest"
   # The health of Applications: the sync waves of the apps of apps (layer ordering);
   # the sign-in with Keycloak and its roles, Keycloak's certificate checked against the
   # platform's CA bundle (Secret certs-bundle of the namespace, trust-manager's): rootCA
@@ -274,6 +318,11 @@ if [[ "$ENGINE" == argocd ]]; then
   kubectl get applications.argoproj.io -n argocd
 else
   log "installing Flux $FLUX_VERSION"
+  # The manifests embedded in the Flux CLI, nothing downloaded: flux install
+  # downloads them from GitHub, unchecked, for a version other than the CLI's own.
+  cli="$(flux version --client -o json | jq -r '.flux')"
+  [[ "$cli" == "$FLUX_VERSION" ]] \
+    || { log "ERROR: the Flux CLI is $cli, FLUX_VERSION $FLUX_VERSION: install the CLI of FLUX_VERSION (or FLUX_VERSION=$cli)"; exit 1; }
   flux install --version="$FLUX_VERSION" --components=source-controller,kustomize-controller,helm-controller
   # Chart version without the OCI digest (see gitops/README.md, "Install with Flux").
   # Cross-namespace source references disabled: a project's HelmRelease

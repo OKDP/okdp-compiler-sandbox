@@ -281,14 +281,29 @@ The packages of the instances come from Git repositories, the catalogs, listed i
 repositories:
   - name: platform-charts         # OKDP/platform-charts: the data services, the control plane
     url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/platform-charts.git
-    ref: feat/claim-provisioner   # a branch or a tag
+    ref: <commit>                 # its full hash (a branch or a tag moves)
   - name: sandbox-charts          # OKDP/sandbox-charts: the sandbox's platform services, the
     url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/sandbox-charts.git
-    ref: feat/claim-provisioner   # provider of the claims of databases; optional ones
+    ref: <commit>                 # provider of the claims of databases; optional ones
   - name: community-charts        # OKDP/community-charts: community services, their operators
     url: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/community-charts.git
-    ref: feat/claim-provisioner
+    ref: <commit>
 ```
+
+Each `ref` is a commit, its full hash: okdp-gitops reads a branch, a tag or a
+commit, but a branch moves, and sandbox-charts' `bootstrap/` holds the scripts
+`scripts/bootstrap.sh` runs with the operator's cluster-admin. `scripts/check.sh`
+warns of a branch or a tag; `scripts/bootstrap.sh` refuses one when it reads
+sandbox-charts from a Git URL (GitHub), unless `--allow-branch`. To move the pins:
+
+```sh
+scripts/bump-catalogs.sh                                  # every catalog: HEAD of ../<name>
+scripts/bump-catalogs.sh sandbox-charts                   # one catalog: HEAD of ../sandbox-charts
+scripts/bump-catalogs.sh sandbox-charts=<commit>          # one catalog: that commit
+```
+
+It edits `catalogs.yaml` only (the `ref` lines); push the commits to the catalogs'
+repositories first: the CI and the bootstrap fetch them from GitHub by their hash.
 
 A catalog holds `catalog/<service>/<version>/` (one package version, immutable once
 released: `Chart.yaml`, `okdp.yaml`, `values.cel.yaml`, `config.schema.json`, the
@@ -301,11 +316,16 @@ the package seaweedfs, which the sandbox does not use (it installs its own S3 st
 RustFS, with Helm): a project may deploy it as an instance.
 
 `scripts/configure.sh --push` copies each catalog that lives on the sandbox's Forgejo
-from its source, at its `ref`. The scripts that compile read the catalogs from the
-same sources: `--catalog <name>=<dir|url>` (or `OKDP_CATALOGS="<name>=<src> ..."`), a
+from its source, at its `ref` (a commit pushed as the copy's `main`, which the CI
+and the console fetch by its hash). The scripts that compile read the catalogs from
+the same sources: `--catalog <name>=<dir|url>` (or `OKDP_CATALOGS="<name>=<src> ..."`), a
 directory being read as it is (uncommitted changes included, but `--push` copies its
 `ref`); else the checkout `<name>` next to this repository, read at `ref` whatever is
-checked out; else `https://github.com/OKDP/<name>.git` at `ref`.
+checked out; else `https://github.com/OKDP/<name>.git` at `ref` (a commit fetched by
+its hash, no branch). A directory and a checkout are the operator's own input. A
+catalog's `name` is also a directory of the scripts' work directory and of the checkouts
+next to this repository: it must match `^[a-z0-9][-a-z0-9]*$` (lowercase letters, digits
+and `-`), in `catalogs.yaml` and in `--catalog`; the scripts refuse any other.
 
 ## Files written by people and by the console
 
@@ -755,18 +775,27 @@ scripts/bootstrap.sh              # the platform's dependencies, with helm (READ
 scripts/configure.sh              # engine, topology; --push: compiled, to Forgejo
 scripts/compile.sh                # compiles the tree into an output directory, the catalogs from Git
 scripts/check.sh                  # CI: the sandbox's own files, the tree compiles
+scripts/bump-catalogs.sh          # pins the catalogs of catalogs.yaml at commits
 scripts/compare-engines.sh        # compares the live objects of two clusters (Argo vs Flux)
 scripts/e2e-kind.sh               # end-to-end install on a throwaway kind cluster
 scripts/lib/                      # shared by the scripts (topology, catalogs, Forgejo)
 ```
 
-- `scripts/bootstrap.sh [--dir DIR] [--catalog NAME=SRC]...`: installs the platform's
+- `scripts/bootstrap.sh [--dir DIR] [--catalog NAME=SRC]... [--allow-branch]`: installs the platform's
   dependencies into the cluster of the current context, the releases of sandbox-charts'
   `bootstrap/charts.yaml` with their values and the steps between them (the CA bundle,
   the deletion protection, the CoreDNS patch, Keycloak's database, OpenBao's init),
   the README's step 3; idempotent. `bootstrap/` is read as the catalogs are (at the
-  `ref` of sandbox-charts in `catalogs.yaml`), or `--dir DIR` as it is. Needs kubectl,
-  helm, yq v4, jq, awk and git.
+  `ref` of sandbox-charts in `catalogs.yaml`), or `--dir DIR` as it is. Its scripts
+  run with the operator's cluster-admin: from a Git URL (GitHub), the commit pinned,
+  fetched by its hash, a branch or a tag refused unless `--allow-branch`; a
+  directory (`--dir`, `--catalog sandbox-charts=DIR`) or the checkout next to this
+  repository is the operator's own input. Needs kubectl, helm, yq v4, jq, awk and
+  git.
+- `scripts/bump-catalogs.sh [--root DIR] [NAME[=COMMIT]]...`: sets the `ref` of each
+  catalog named (every one without NAME) in `catalogs.yaml` to COMMIT, a full hash,
+  or to the HEAD of the checkout NAME next to this repository
+  ([Service catalogs](#service-catalogs)). Needs yq v4 and git.
 - `scripts/configure.sh [-i] [--engine argocd|flux] [--topology io|split]`: sets
   `gitops.engine` of the control plane server; sets the [topology](#topologies).
   Without arguments on a terminal (or with `-i`) it asks, the current values being the
@@ -824,7 +853,9 @@ scripts/lib/                      # shared by the scripts (topology, catalogs, F
   `OKDP_CATALOGS` or next to this repository and the control plane and okdp-gitops
   images of your choice (`E2E_SERVER_IMAGE`, `E2E_GITOPS_IMAGE`); then a push of the
   admin to the output's `main` must be refused, and a plain commit of the tree, pushed
-  to Forgejo, must be compiled by the next scheduled run of the CI and deployed. See
-  its header.
+  to Forgejo, must be compiled by the next scheduled run of the CI and deployed. The
+  engine is pinned: Argo CD's `install.yaml` applied only if its sha256 is
+  `ARGOCD_INSTALL_SHA256` (pinned with `ARGOCD_VERSION`), Flux's manifests the ones
+  embedded in the Flux CLI, which must be of `FLUX_VERSION`. See its header.
 - `scripts/compare-engines.sh`: compares the live objects of releases between an Argo
   CD cluster and a Flux cluster, ignoring engine-specific metadata. See its header.

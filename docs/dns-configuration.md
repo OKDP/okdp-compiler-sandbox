@@ -35,8 +35,15 @@ sudo systemctl restart systemd-resolved
 
 #### Linux with NetworkManager
 
+Route only `okdp.sandbox` to the sandbox: the sandbox's DNS server
+forwards every other name to the resolvers of the kind node, hence of
+this host, so making it the host's only resolver loops (CoreDNS's loop
+plugin then stops it). When NetworkManager hands DNS to
+systemd-resolved (the common case), use the systemd-resolved drop-in
+above. With NetworkManager's dnsmasq plugin (`dns=dnsmasq`):
+
 ```bash
-nmcli connection modify "$(nmcli -t -f NAME connection show --active | head -n1)" ipv4.dns-search "okdp.sandbox" ipv4.dns "127.0.0.1:30053"
+echo "server=/okdp.sandbox/127.0.0.1#30053" | sudo tee /etc/NetworkManager/dnsmasq.d/okdp-sandbox.conf
 sudo systemctl restart NetworkManager
 ```
 
@@ -51,19 +58,14 @@ sudo systemctl restart dnsmasq
 
 The sandbox deploys a DNS server exposed on port 53 (standard DNS port). Configure your local resolver to point to `localhost:53` for the `okdp.sandbox` domain.
 
+Route only `okdp.sandbox` to it, with a Name Resolution Policy Table
+rule: making it the adapter's only DNS server loops, since the sandbox's
+DNS server forwards every other name to the host's resolvers.
+
 1. Open PowerShell as Administrator
-2. Run the following commands:
+2. Run:
 ```powershell
-# Add DNS server for the domain
-netsh interface ip set dns "Local Area Connection" static 127.0.0.1
-# Note: You may need to adjust "Local Area Connection" to match your network interface name
-
-# Alternative: Configure DNS for specific interface
-# First, list available interfaces
-Get-NetAdapter | Where-Object {$_.Status -eq "Up"}
-
-# Then set DNS for the specific interface (replace "Ethernet" with your interface name)
-Set-DnsClientServerAddress -InterfaceAlias "Ethernet" -ServerAddresses "127.0.0.1"
+Add-DnsClientNrptRule -Namespace ".okdp.sandbox" -NameServers "127.0.0.1"
 ```
 
 ## Verification
@@ -129,5 +131,5 @@ Add the following entries to your `/etc/hosts` file for each service that will b
 ### Reverting Changes
 - **macOS**: `sudo rm /etc/resolver/okdp.sandbox`
 - **Linux (systemd-resolved)**: `sudo rm /etc/systemd/resolved.conf.d/okdp-sandbox.conf && sudo systemctl restart systemd-resolved`
-- **Linux (NetworkManager)**: Reset network configuration through NetworkManager
-- **Windows**: Reset network adapter settings through Network & Internet settings
+- **Linux (NetworkManager with dnsmasq)**: `sudo rm /etc/NetworkManager/dnsmasq.d/okdp-sandbox.conf && sudo systemctl restart NetworkManager`
+- **Windows**: `Get-DnsClientNrptRule | Where-Object Namespace -eq ".okdp.sandbox" | Remove-DnsClientNrptRule -Force`

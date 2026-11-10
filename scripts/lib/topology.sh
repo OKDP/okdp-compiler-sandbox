@@ -307,6 +307,40 @@ catalog_list() {
   yq -r '.repositories[]? | [.name, .url, .ref] | @tsv' "$CATALOG_FILE"
 }
 
+# catalog_name_check NAME: dies unless NAME is a DNS label (lowercase letters, digits and
+# -, starting with a letter or digit): a catalog's name is a directory of the work
+# directory (rm -rf, unpacked into) and of the checkouts next to this repository, so a
+# name of catalogs.yaml, a flag or OKDP_CATALOGS (/, .., a leading -) must not reach a path.
+catalog_name_check() {
+  [[ "$1" =~ ^[a-z0-9][-a-z0-9]*$ ]] \
+    || die "catalog name '$1': lowercase letters, digits and - only, starting with a letter or a digit (^[a-z0-9][-a-z0-9]*\$)"
+}
+
+# catalog_ref NAME: the ref of the catalog NAME in catalogs.yaml (empty: none).
+catalog_ref() {
+  [[ -f "$CATALOG_FILE" ]] || return 0
+  NAME="$1" yq -r '.repositories[]? | select(.name == strenv(NAME)) | .ref' "$CATALOG_FILE"
+}
+
+# catalog_ref_is_commit REF: REF is a full commit hash (40 lowercase hexadecimal
+# digits), what catalogs.yaml pins (okdp-gitops reads a branch, a tag or a commit):
+# a commit does not move, a branch or a tag does.
+catalog_ref_is_commit() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+
+# catalog_fetch URL COMMIT REPO [--shallow]: the commit COMMIT of the Git repository
+# URL fetched into the bare repository REPO (created afresh), that commit exactly, no
+# branch (GitHub and Forgejo serve a commit of their history by its hash); its history
+# too unless --shallow (Forgejo refuses a shallow push).
+catalog_fetch() {
+  local url="$1" commit="$2" repo="$3" depth=()
+  [[ "${4:-}" != --shallow ]] || depth=(--depth 1)
+  rm -rf "$repo"; mkdir -p "$(dirname "$repo")"
+  git init -q --bare "$repo"
+  git -C "$repo" fetch -q "${depth[@]}" "$url" "$commit" 2>"$repo.log" \
+    || { cat "$repo.log" >&2; return 1; }
+  [[ "$(git -C "$repo" rev-parse -q --verify "FETCH_HEAD^{commit}")" == "$commit" ]]
+}
+
 # Where each catalog is read from, NAME -> SRC: --catalog NAME=SRC of the scripts and
 # OKDP_CATALOGS ("NAME=SRC ...", the flags win); SRC a directory (read as it is) or a
 # Git URL (read at the catalog's ref). Without either, the Git checkout of the same
@@ -315,6 +349,7 @@ catalog_list() {
 declare -A CATALOG_SRC=()
 catalog_source_add() {
   [[ "$1" == ?*=?* ]] || die "--catalog '$1': NAME=DIR or NAME=URL"
+  catalog_name_check "${1%%=*}"
   CATALOG_SRC["${1%%=*}"]="${1#*=}"
 }
 catalog_sources_init() { # the --catalog values of the command line
@@ -354,6 +389,7 @@ catalogs_resolve() {
   $CATALOGS_RESOLVED && return 0
   CATALOGS_RESOLVED=true
   while IFS=$'\t' read -r name url ref; do
+    catalog_name_check "$name"
     read -r kind src <<<"$(catalog_origin "$name")"
     dest="$WORK/catalogs/$name"
     case "$kind" in
@@ -371,8 +407,16 @@ catalogs_resolve() {
         ;;
       url)
         rm -rf "$dest"; mkdir -p "$(dirname "$dest")"
-        git clone -q --depth 1 --branch "$ref" "$src" "$dest" 2>"$WORK/clone.log" \
-          || { cat "$WORK/clone.log" >&2; die "catalog $name: cannot clone $ref of $src (--catalog $name=DIR|URL)"; }
+        if catalog_ref_is_commit "$ref"; then
+          # The commit itself, no branch: what catalogs.yaml pins is what is read.
+          catalog_fetch "$src" "$ref" "$WORK/catalog-fetch/$name" --shallow \
+            || die "catalog $name: cannot fetch the commit $ref of $src (--catalog $name=DIR|URL)"
+          mkdir -p "$dest"
+          git -C "$WORK/catalog-fetch/$name" archive "$ref" | tar -x -C "$dest"
+        else
+          git clone -q --depth 1 --branch "$ref" "$src" "$dest" 2>"$WORK/clone.log" \
+            || { cat "$WORK/clone.log" >&2; die "catalog $name: cannot clone $ref of $src (--catalog $name=DIR|URL)"; }
+        fi
         CATALOG_DIRS[$name]="$dest"
         echo "catalog $name: $src at $ref" >&2
         ;;

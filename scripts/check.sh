@@ -22,6 +22,7 @@
 # re-implements none. It checks the sandbox itself:
 #   1. the files the scripts and the engines read beside the compile parse (the
 #      server's values, catalogs.yaml, projects.yaml, platform.yaml, argocd/, flux/);
+#      a catalog of catalogs.yaml at a branch or a tag, not a commit, warned of;
 #   2. the sandbox's files agree with its scripts: the control plane server names the
 #      sandbox's io or split topology (gitops.topology; no single repository, mono is
 #      gone; io warned of: every writer of the projects repository writes every
@@ -92,7 +93,7 @@ while [[ $# -gt 0 ]]; do
     --catalog) CATALOGS+=("$2"); shift 2 ;;
     --charts) CHARTS="$(mkdir -p "$2" && cd "$2" && pwd)"; shift 2 ;;
     --helm) HELM=true; shift ;;
-    -h|--help) sed -n '18,75p' "$0"; exit 0 ;;
+    -h|--help) sed -n '18,76p' "$0"; exit 0 ;;
     *) echo "check: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -134,6 +135,14 @@ fi
 step "catalogs"
 catalog_sources_init "${CATALOGS[@]}"
 catalogs_resolve
+# A branch or a tag moves: what the sandbox reads, and the bootstrap runs, would be
+# whatever it holds then (scripts/bootstrap.sh refuses one read from GitHub).
+while IFS=$'\t' read -r name _ ref; do
+  catalog_ref_is_commit "$ref" && continue
+  runs=""
+  [[ "$name" != "$BOOTSTRAP_CATALOG" ]] || runs=", its bootstrap/ scripts run with cluster-admin (scripts/bootstrap.sh refuses it from GitHub)"
+  echo "   warning: catalogs.yaml: catalog $name at ref '$ref', not a commit hash: it moves, the sandbox reads what it holds then$runs; pin a commit (scripts/bump-catalogs.sh)"
+done < <(catalog_list)
 
 # --------------------------------------------------- 2. the sandbox's own files
 step "topology ($(topology_current))"
