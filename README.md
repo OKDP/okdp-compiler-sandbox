@@ -106,7 +106,8 @@ The sandbox is for a single workstation, not a shared or reachable environment:
   - **the secret store is unsealed by itself.** OpenBao is initialized with one unseal
     key share, kept in Secret `openbao/openbao-init`, which a sidecar of its pod reads
     to unseal it at every restart: whoever reads that Secret and the volume reads
-    every credential of the platform. Its root token is revoked at the init, once
+    every credential of the platform (that unseal key is root-equivalent: `bao operator
+    generate-root` takes it and no token). Its root token is revoked at the init, once
     the role `okdp-bootstrap` signs in (the ServiceAccount `openbao/okdp-bootstrap`,
     which writes the keys and reads none); it serves TLS (a certificate of
     `default-issuer`). A platform's OpenBao holds its key shares elsewhere or
@@ -137,7 +138,8 @@ The platform's dependencies ([`bootstrap/`](https://github.com/OKDP/sandbox-char
 | cert-manager, trust-manager, the cluster issuer `default-issuer` (a CA minted in the cluster) and the CA bundle of every namespace | `cert-manager`, `trust-manager` (jetstack), `cert-issuers` (quay.io/okdp/charts) | `global.okdp.tls`: the issuer of every certificate, the Secret `certs-bundle` the services mount |
 | ingress-nginx, on the node ports kind maps to the host | `ingress-nginx` | `global.okdp.ingress`: the class `nginx` of every ingress |
 | The cluster's CoreDNS answering `*.okdp.sandbox` with the ingress controller ([`patch.sh`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/coredns/patch.sh)), the host's DNS server (node port 30053) | `coredns` | the services reach each other, Keycloak first, by their public names |
-| Reloader, the deletion protection ([`policies.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/protection/policies.yaml)) | `reloader` | workloads restarted when their Secrets change, `okdp.io/protected` objects and the operators' CRDs not deleted |
+| Reloader, the deletion protection and the admission bounds ([`policies.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/protection/policies.yaml), [`ingress-hosts.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/protection/ingress-hosts.yaml)) | `reloader` | workloads restarted when their Secrets change, `okdp.io/protected` objects and the operators' CRDs not deleted, a project's Ingress and Certificate hosts bound to its namespace |
+| approver-policy and its [policies](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/approver-policy/policies.yaml) | `approver-policy` | the only approver of the certificate requests: `default-issuer` signs a project's own hosts (`-<namespace>.okdp.sandbox`) and the platform's namespaces' names |
 | CloudNativePG, the PostgreSQL operator | `cloudnative-pg` | the platform's database server (`cnpg-system/cnpg-postgresql`) runs on it |
 | External Secrets | `external-secrets` | the SecretStore the compiler writes in each project's namespace, over the secret store |
 | OpenBao, the platform's secret store, over https (a certificate of `default-issuer`): its KV mount `okdp`, the Kubernetes auth (the role `okdp`, of the audience `openbao`) and the policy of the namespaces, the keys of the bootstrap | `openbao` | `global.okdp.secrets`: what crosses namespaces (the demo's S3 identity, the secrets of Keycloak's clients, the claims' credentials), each namespace its own keys; each namespace's SecretStore checks OpenBao's certificate against `certs-bundle` and signs in with a token of the audience `openbao` |
@@ -205,7 +207,7 @@ GitOps user ──────────────────────�
 ## Prerequisites
 
 - 16 GB RAM and 4 CPUs at least for the platform; the whole demo project needs about 32 GB.
-- [Docker](https://docs.docker.com/get-docker/) or a compatible container runtime, [Kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation), [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/), [Helm](https://helm.sh/docs/intro/install/) (3.8 or later) and `git`.
+- [Docker](https://docs.docker.com/get-docker/) or a compatible container runtime, [Kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation), [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/), [Helm](https://helm.sh/docs/intro/install/) (4.3 tested; one that installs `oci://…@sha256:…` references) and `git`.
 - For Argo CD: nothing more (tested with v3.4.2). For Flux: the [Flux CLI](https://fluxcd.io/flux/installation/) (tested with v2.9.5).
 - For step 3, `scripts/bootstrap.sh`: [yq](https://github.com/mikefarah/yq) v4, `jq` (the CoreDNS patch, OpenBao's init), `awk` and `git` (sandbox-charts, where the bootstrap lives).
 - To configure the sandbox and change the layout by hand: `okdp-gitops` ([okdp-gitops](https://github.com/OKDP/okdp-gitops), `make build`), [yq](https://github.com/mikefarah/yq) v4, `curl` and `jq`. The scripts read the service catalogs from checkouts of [platform-charts](https://github.com/OKDP/platform-charts), [sandbox-charts](https://github.com/OKDP/sandbox-charts) and [community-charts](https://github.com/OKDP/community-charts) next to this repository when there are some (at the commit [`catalogs.yaml`](gitops/catalogs.yaml) pins), else from GitHub.
@@ -393,7 +395,7 @@ nothing of them is in the deployments repositories, and the engine does not mana
 them: upgrade one by running its command again, or the whole script.
 
 ```sh
-scripts/bootstrap.sh
+scripts/bootstrap.sh --gitops-digest sha256:...   # the digest printed in step 2
 ```
 
 [`scripts/bootstrap.sh`](scripts/bootstrap.sh) reads `bootstrap/` as the catalogs are
@@ -409,8 +411,16 @@ repository are your own input, read as they are. It applies the namespaces first
 with their Pod Security levels (`bootstrap/namespaces.yaml`: `baseline` enforced,
 `restricted` warned and audited, `forgejo` alone `privileged` for the CI runner's
 Docker daemon; `argocd` and `flux-system`, the engines' namespaces, are labelled the
-same), which the releases' `--create-namespace` find. It needs `helm`, `yq`,
-`jq`, `awk` and `git`.
+same), which the releases' `--create-namespace` find, then the default deny of the
+ingress of the namespaces whose release brings no NetworkPolicy
+(`bootstrap/network-policies.yaml`: the webhooks' ports stay open). It installs each chart by its
+content, which sandbox-charts' `bootstrap/charts.yaml` pins (the sha256 of the package
+of a chart of a repository, checked before the install; the digest of an OCI chart's
+manifest) with the images by digest in the values, and the CI runner's okdp-gitops
+image by the digest of step 2 (`--gitops-digest`, `OKDP_GITOPS_IMAGE_DIGEST` or
+`okdpGitopsImage.digest` of the runner's values with `--dir`): it installs nothing
+without one. It needs `helm` (one that installs `oci://…@sha256:…` references: 4.3
+here), `yq`, `jq`, `awk` and `git`.
 
 Their ingresses (`keycloak`, `s3`, `s3-console`, `forgejo` `.okdp.sandbox`) are served
 by the ingress controller installed first. The
@@ -638,7 +648,9 @@ Change `okdp.sandbox` there, in `gitops/argocd/ingress.yaml` and
 re-rendered. The dependencies take it from their values, in sandbox-charts: `domain` of
 `bootstrap/keycloak/values.yaml` and `bootstrap/rustfs/values.yaml`, the hosts of
 `bootstrap/forgejo/values.yaml`, the zone of `bootstrap/dns-server/values.yaml`, and
-`SUFFIX` of `bootstrap/coredns/patch.sh`; run their commands again (step 3).
+`SUFFIX` of `bootstrap/coredns/patch.sh`, the suffix of
+`bootstrap/protection/ingress-hosts.yaml` and the `okdp.sandbox` of the rules of
+`bootstrap/approver-policy/policies.yaml`; run their commands again (step 3).
 
 ### OAuth clients of the services (optional)
 
@@ -647,7 +659,9 @@ The sandbox registers the services' OAuth clients by dynamic client registration
 client in the realm `okdp` with an initial access token of its namespace
 (`global.okdp.oidc.dcr.authMethod: initialAccessToken`; Secret `okdp-dcr-token`, from
 OpenBao, where sandbox-charts' `bootstrap/openbao/init.sh` mints one per namespace of
-`DCR_NAMESPACES`, `demo` by default, step 3) and writes it to Secret
+`DCR_NAMESPACES`, `demo` by default, step 3, a namespace name but `platform`; one
+token per namespace, valid 30 days by default, minted again by the next run only
+when it is gone, used up or about to end) and writes it to Secret
 `<release>-<namespace>-dcr`. The realm refuses anonymous registration (Keycloak's own
 client registration policies, [`realm.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/keycloak/realm.yaml) declares none). The Job runs `quay.io/adaltas/oidc-dcr-job`.
 The console's own client (`okdp-ui`) stays declared in the Keycloak realm. The alternative is
