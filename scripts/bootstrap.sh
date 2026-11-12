@@ -57,8 +57,10 @@
 #      the realm under <namespace>/keycloak/<client> (property client_secret) of
 #      the namespaces that read it (bootstrap/openbao/clients.yaml), where the
 #      compiled instances read it; an initial access token of the realm okdp per
-#      namespace of DCR_NAMESPACES (demo by default), with which its services
-#      register their OAuth clients (the realm refuses anonymous registration);
+#      namespace of DCR_NAMESPACES (demo by default; the namespace's secrets instance
+#      must read it, an entry okdp-dcr-token: scripts/check.sh warns of one that does
+#      not), with which its services register their OAuth clients (the realm refuses
+#      anonymous registration);
 #   9. Forgejo (forgejo), the Git server of the deployments repositories and of the
 #      catalogs, its admin account in Secret forgejo/okdp-forgejo-admin, a random
 #      password created once, then its CI runner (bootstrap/forgejo-runner, a chart of
@@ -140,6 +142,8 @@ echo "bootstrap: $DIR"
   || { echo "bootstrap: no digest of the okdp-gitops image of the CI's jobs (sha256:<64 hex>): --gitops-digest, OKDP_GITOPS_IMAGE_DIGEST or okdpGitopsImage.digest of $DIR/forgejo-runner/values.yaml (README, step 2)" >&2; exit 2; }
 
 step() { echo; echo "== $*"; }
+# shellcheck source=lib/common.sh
+source "$SCRIPTS/lib/common.sh"
 declare -F die >/dev/null || die() { echo "bootstrap: $*" >&2; exit 1; }
 
 # release NAME [--no-wait]: helm upgrade --install of the release NAME of charts.yaml,
@@ -230,7 +234,7 @@ release external-secrets
 
 step "Keycloak and its database"
 if ! kubectl -n keycloak get secret keycloak-admin >/dev/null 2>&1; then
-  head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' | kubectl -n keycloak create secret generic \
+  random_hex 24 | kubectl -n keycloak create secret generic \
     keycloak-admin --from-file=admin-password=/dev/stdin
 fi
 kubectl apply -f "$DIR/keycloak/database.yaml"
@@ -248,14 +252,14 @@ release rustfs
 
 step "OpenBao, the platform's secret store"
 release openbao
-# DCR_NAMESPACES: the non-privileged project namespaces whose services register their
-# OAuth clients by DCR (platform.yaml, authMethod: initialAccessToken); init.sh mints
-# an initial access token per namespace and writes it to the store.
-DCR_NAMESPACES="${DCR_NAMESPACES:-demo}" "$DIR/openbao/init.sh"
+# DCR_NAMESPACES (lib/common.sh): init.sh mints an initial access token per namespace
+# and writes it to the store, <namespace>/keycloak/dcr-token; the namespace's secrets
+# instance reads it into Secret okdp-dcr-token (scripts/check.sh warns of one that does not).
+DCR_NAMESPACES="$DCR_NAMESPACES" "$DIR/openbao/init.sh"
 
 step "Forgejo"
 if ! kubectl -n forgejo get secret okdp-forgejo-admin >/dev/null 2>&1; then
-  head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' | kubectl -n forgejo create secret generic \
+  random_hex 24 | kubectl -n forgejo create secret generic \
     okdp-forgejo-admin --from-literal=username=okdp-admin --from-file=password=/dev/stdin
 fi
 release forgejo

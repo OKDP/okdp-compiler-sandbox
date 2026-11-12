@@ -497,13 +497,13 @@ account `okdp-gitops` is deleted, its tokens and teams with it):
 Each run sets a random password on each account, creates its tokens with it and
 forgets it; their previous tokens are deleted. The CI's jobs get the CI's token from
 the output repository's Actions secret (the runner holds no git credentials; the
-token goes in clear, over `http://`, to the in-cluster Forgejo only, its exact host,
-never a glob of the cluster's Services: the workflow carries
-`GITOPS_INSECURE_HTTP_HOSTS=forgejo-http.forgejo.svc.cluster.local`,
-`CI_INSECURE_HTTP_HOSTS` of `scripts/lib/topology.sh`, with which `scripts/check.sh`
-has `okdp-gitops workflow` write the CI's workflow, refused for another `http://`
-host; not `https://forgejo.okdp.sandbox`, which the job's container, without the
-platform's CA bundle, cannot check), and
+token goes over TLS: the CI's repositories and the catalogs of `catalogs.yaml` are at
+`https://forgejo.okdp.sandbox` (`CI_FORGEJO_URL` of `scripts/lib/topology.sh`), the
+job's container mounting the platform's CA bundle the runner's Docker daemon holds
+(`caBundle` of the runner chart) and trusting it, `SSL_CERT_FILE`
+(`GITOPS_RUNNER_CA_FILE`, `CI_CA_FILE`); `CI_INSECURE_HTTP_HOSTS`, the hosts the token
+may reach in clear over `http://`, is empty, and `scripts/check.sh` has
+`okdp-gitops workflow` write the CI's workflow, refused for an `http://` host), and
 the runner's registration secret to `forgejo/okdp-runner-registration`, nowhere else.
 The output repository's `main` is protected: `okdp-ci` alone pushes there (its
 push whitelist), never the admin, the console nor a person, no force push; the
@@ -681,7 +681,11 @@ scripts/bootstrap.sh   # or the helm upgrade of Keycloak and sandbox-charts' boo
 
 A project of another namespace whose services register clients needs its token: add
 the namespace to `DCR_NAMESPACES` and run `scripts/bootstrap.sh` again (or
-sandbox-charts' `bootstrap/openbao/init.sh` with it).
+sandbox-charts' `bootstrap/openbao/init.sh` with it), and an entry `okdp-dcr-token`
+(`remoteKey: <namespace>/keycloak/dcr-token`, `properties: [token]`) in the namespace's
+secrets instance, like [`projects/demo/instances/secrets`](gitops/projects/demo/instances/secrets/config.yaml):
+the token is minted for the namespace, but only that entry makes it the Secret the
+Jobs read. `scripts/check.sh` warns of a namespace of `DCR_NAMESPACES` without it.
 
 ### 6. DNS setup
 

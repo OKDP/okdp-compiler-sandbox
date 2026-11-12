@@ -34,8 +34,8 @@
 #      Argo CD's oidc.tls.insecure.skip.verify, the console's keycloak.tlsInsecure
 #      false); the secret store's provider is https, its CA given, its tokens of an
 #      audience of their own (audiences); the console's gitops.insecureHTTPHosts and
-#      the CI's CI_INSECURE_HTTP_HOSTS name exact hosts, no glob (the CI's warned
-#      of); the
+#      the CI's CI_INSECURE_HTTP_HOSTS (none by default: the CI is over https at
+#      CI_FORGEJO_URL) name exact hosts, no glob (the CI's warned of); the
 #      CI's workflow is written (okdp-gitops workflow --for output, which refuses an
 #      http:// host not in CI_INSECURE_HTTP_HOSTS); projects.yaml lists the projects
 #      of projects/ (split); a project of projects/ has a project.yaml (the scripts'
@@ -218,10 +218,18 @@ fi
 ci_topology_file "$topology" >"$TMP/topology.ci.yaml"
 if ! forgejo_output_workflow "$TMP/ci" "$TMP/topology.ci.yaml" 2>"$TMP/.workflow.log"; then
   compile_report "$TMP/.workflow.log"
-  fail "the CI's workflow (okdp-gitops workflow --for output, CI_INSECURE_HTTP_HOSTS=$CI_INSECURE_HTTP_HOSTS): its topology refused"
+  fail "the CI's workflow (okdp-gitops workflow --for output, CI_INSECURE_HTTP_HOSTS=${CI_INSECURE_HTTP_HOSTS:-none}): its topology refused"
 fi
+# The catalogs the CI fetches are at https://, or at an http:// host the CI's token may
+# reach (CI_INSECURE_HTTP_HOSTS): the compile refuses a credential in clear.
+while IFS=$'\t' read -r cname curl cref; do
+  [[ "$curl" == http://* ]] || continue
+  chost="${curl#http://}"; chost="${chost%%/*}"; chost="${chost%%:*}"
+  [[ ",$CI_INSECURE_HTTP_HOSTS," == *",$chost,"* ]] \
+    || fail "catalogs.yaml: the catalog $cname is at $curl, over http:// to $chost, which CI_INSECURE_HTTP_HOSTS does not allow: the CI's token would not be sent (use https://, CI_FORGEJO_URL)"
+done < <(catalog_list)
 if [[ "$CI_INSECURE_HTTP_HOSTS" == *[*?[]* ]]; then
-  echo "   warning: CI_INSECURE_HTTP_HOSTS=$CI_INSECURE_HTTP_HOSTS is a glob: the CI's token goes in clear to any host it matches, name the in-cluster Forgejo's exact host"
+  echo "   warning: CI_INSECURE_HTTP_HOSTS=$CI_INSECURE_HTTP_HOSTS is a glob: the CI's token goes in clear to any host it matches, name an exact host (none by default: the CI is over https)"
 fi
 if [[ "$topology" == split ]]; then
   if [[ ! -f "$PROJECTS_FILE" ]]; then
@@ -250,6 +258,24 @@ if [[ -f "$ROOT/platform.yaml" ]]; then
   for p in $(yq -r '.global.okdp.policy.privileged[]?' "$ROOT/platform.yaml"); do
     [[ -f "$ROOT/projects/$p/project.yaml" || -f "$ROOT/optional/projects/$p/project.yaml" ]] \
       || fail "platform.yaml: global.okdp.policy.privileged: $p is no project of projects/ or optional/projects/"
+  done
+fi
+
+# The initial access tokens of DCR: the bootstrap mints one per namespace of
+# DCR_NAMESPACES (lib/common.sh, scripts/bootstrap.sh); a namespace whose secrets
+# instance (the service local-secrets-provider of the project) has no entry
+# okdp-dcr-token reading <namespace>/keycloak/dcr-token gets no Secret
+# okdp-dcr-token: every oidc-dcr Job of the namespace fails.
+if [[ -f "$ROOT/platform.yaml" && "$(yq '.global.okdp.oidc.clientProvisioning // ""' "$ROOT/platform.yaml")" == dcr \
+  && "$(yq '.global.okdp.oidc.dcr.authMethod // ""' "$ROOT/platform.yaml")" == initialAccessToken ]]; then
+  for ns in $DCR_NAMESPACES; do
+    found=false
+    for i in "$ROOT/projects/$ns"/instances/*/instance.yaml; do
+      [[ -f "$i" && "$(yq '.service // ""' "$i")" == local-secrets-provider ]] || continue
+      NS="$ns" yq -e '(.secrets // [])[] | select(.name == "okdp-dcr-token" and .remoteKey == strenv(NS) + "/keycloak/dcr-token")' \
+        "$(dirname "$i")/config.yaml" >/dev/null 2>&1 && found=true
+    done
+    $found || echo "   warning: DCR_NAMESPACES: $ns has no secrets instance (local-secrets-provider) with an entry okdp-dcr-token reading $ns/keycloak/dcr-token: the bootstrap mints its initial access token, nothing reads it and the oidc-dcr Jobs of $ns fail"
   done
 fi
 

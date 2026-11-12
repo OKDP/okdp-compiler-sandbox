@@ -74,15 +74,6 @@ FORGEJO_CATALOG_REPOS=()
 
 dry() { echo "[dry-run] $*"; }
 
-# random_hex BYTES: BYTES random bytes, in hexadecimal.
-random_hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
-
-# secret_value NAMESPACE SECRET KEY: the value of KEY of a Secret of the current
-# context; fails when the Secret does not exist.
-secret_value() {
-  kubectl -n "$1" get secret "$2" -o "jsonpath={.data.$3}" 2>/dev/null | base64 -d
-}
-
 # secret_write NAMESPACE SECRET KEY=VALUE...: the Secret, with these keys, created or
 # updated in the current context (the namespace created if missing). The values reach
 # kubectl on its standard input, never on a command line.
@@ -376,12 +367,14 @@ forgejo_push_tree() {
 # okdp-gitops compile of the topology file TOPOLOGY, which the workflow carries (the
 # runner has none), with the output repository's secret OKDP_GITOPS_TOKEN, the only
 # token of the CI (forgejo_ci_token): it reads the sources and writes the output, over
-# http:// to the hosts of CI_INSECURE_HTTP_HOSTS only (the in-cluster Forgejo), the
-# job's environment carrying them. A run whose sources did not move since the last
+# https:// at CI_FORGEJO_URL (the job trusts the platform's CA bundle, CI_CA_FILE), and
+# over http:// only to the hosts of CI_INSECURE_HTTP_HOSTS (none by default), the job's
+# environment carrying them. A run whose sources did not move since the last
 # compile (sources.yaml of the output) stops early; no push starts a run.
 forgejo_output_workflow() {
   mkdir -p "$1/.forgejo/workflows"
-  GITOPS_INSECURE_HTTP_HOSTS="$CI_INSECURE_HTTP_HOSTS" "${OKDP_GITOPS:-okdp-gitops}" workflow --for output \
+  GITOPS_INSECURE_HTTP_HOSTS="$CI_INSECURE_HTTP_HOSTS" GITOPS_RUNNER_CA_FILE="$CI_CA_FILE" \
+    "${OKDP_GITOPS:-okdp-gitops}" workflow --for output \
     --config "$2" >"$1/.forgejo/workflows/okdp-gitops.yaml"
 }
 
@@ -393,7 +386,7 @@ forgejo_output_workflow() {
 # reads it from its url).
 forgejo_push_catalogs() {
   local name url ref kind src base path owner repo commit target clone
-  base="$(forgejo_cluster_url)"
+  base="$CI_FORGEJO_URL"
   while IFS=$'\t' read -r name url ref; do
     if [[ "$url" != "$base/"* ]]; then
       echo "catalog $name: $url is not on this Forgejo, not copied"

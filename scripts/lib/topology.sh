@@ -67,6 +67,10 @@ SANDBOX_TOP="$(git -C "$SCRIPTS" rev-parse --show-toplevel 2>/dev/null || (cd "$
 
 die() { echo "$PROG: $*" >&2; exit 1; }
 
+# random_hex, secret_value.
+# shellcheck source=common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+
 # on_exit COMMAND: run COMMAND when the script exits (after the ones registered before).
 ON_EXIT=()
 run_on_exit() {
@@ -197,20 +201,34 @@ topology_matches() {
 # ci_topology_file TOPOLOGY: the topology file of the CI, which the workflow of the
 # output repository carries (scripts/lib/forgejo.sh, forgejo_output_workflow), the
 # server's without forgejo (the CI creates no repository; okdp-gitops requires the
-# token file of a forgejo section, which the CI has not).
-ci_topology_file() { topology_file "$1" | grep -v '^forgejo:'; }
+# token file of a forgejo section, which the CI has not), its repositories at
+# CI_FORGEJO_URL (below) instead of the Service the server reaches.
+ci_topology_file() {
+  local base file
+  base="$(forgejo_cluster_url)"
+  file="$(topology_file "$1" | grep -v '^forgejo:')"
+  printf '%s\n' "${file//"$base/"/"$CI_FORGEJO_URL/"}"
+}
 
+# CI_FORGEJO_URL: the Forgejo the CI's jobs reach, https://forgejo.okdp.sandbox, by
+# its ingress (the CoreDNS patch answers the ingress controller for *.okdp.sandbox in
+# the cluster, the runner's egress lets it through): the repositories of the CI's
+# topology and the catalogs of catalogs.yaml are at this URL, so that the CI's token
+# crosses the network over TLS only. The job's container trusts the platform's CA
+# bundle, which the runner mounts (CI_CA_FILE, the runner chart's caBundle: the
+# directory of the Docker daemon's container the jobs may mount read-only), the
+# public CAs and the sandbox's in it. The server and the engines keep the Service
+# (http, the exact host of gitops.insecureHTTPHosts), their own.
+CI_FORGEJO_URL="${CI_FORGEJO_URL:-https://forgejo.okdp.sandbox}"
+CI_CA_FILE="${CI_CA_FILE:-/etc/okdp/ca/ca.crt}"
 # CI_INSECURE_HTTP_HOSTS: the hosts the CI's token may reach over http://, in clear,
 # comma separated, globs allowed (okdp-gitops workflow refuses a topology with an
-# http:// URL of any other host, okdp-gitops compile sends no credential there): the
-# in-cluster Forgejo of forgejo_cluster_url only, its exact host, never a glob such
-# as *.svc.cluster.local, which would hand the token to any Service of the cluster
-# that a topology or a catalog named. http:// and not https://: the job's container
-# (okdp-gitops workflow's, on the runner's Docker daemon) has no setting for the
-# platform's CA bundle, which https://forgejo.okdp.sandbox needs; the token crosses
-# the cluster's network only, from the runner's pod to Forgejo's Service. The workflow
-# carries it, as GITOPS_INSECURE_HTTP_HOSTS of the job's environment.
-CI_INSECURE_HTTP_HOSTS="${CI_INSECURE_HTTP_HOSTS:-forgejo-http.forgejo.svc.cluster.local}"
+# http:// URL of any other host, okdp-gitops compile sends no credential there): none
+# by default, the CI's URLs are https://. Name exact hosts only, never a glob such as
+# *.svc.cluster.local, which would hand the token to any Service of the cluster that a
+# topology or a catalog named. The workflow carries it, as GITOPS_INSECURE_HTTP_HOSTS
+# of the job's environment.
+CI_INSECURE_HTTP_HOSTS="${CI_INSECURE_HTTP_HOSTS:-}"
 
 # The output repository of a topology: compiled/, argocd/ at its root, a repository
 # of its own in every topology.
