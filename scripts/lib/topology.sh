@@ -199,7 +199,7 @@ topology_matches() {
 }
 
 # ci_topology_file TOPOLOGY: the topology file of the CI, which the workflow of the
-# output repository carries (scripts/lib/forgejo.sh, forgejo_output_workflow), the
+# output repository carries (scripts/lib/forgejo-ci.sh, forgejo_output_workflow), the
 # server's without forgejo (the CI creates no repository; okdp-gitops requires the
 # token file of a forgejo section, which the CI has not), its repositories at
 # CI_FORGEJO_URL (below) instead of the Service the server reaches.

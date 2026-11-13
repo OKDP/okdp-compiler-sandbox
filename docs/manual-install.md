@@ -33,8 +33,8 @@ its class) bound to its provider, of whatever namespace.
 
 ## What is installed
 
-The platform's dependencies of [`bootstrap/`](https://github.com/OKDP/sandbox-charts/tree/main/bootstrap) (cert-manager and the CA
-bundle, the tools and the deletion protection, ingress-nginx, the CoreDNS patch, the
+The platform's dependencies of [`bootstrap/`](https://github.com/OKDP/sandbox-charts/tree/main/bootstrap) (cert-manager, its approver and
+the CA bundle, the tools and the admission policies, ingress-nginx, the CoreDNS patch, the
 DNS server, CloudNativePG, External Secrets, Keycloak, RustFS, OpenBao, the platform's
 secret store), installed with Helm as the README's step 3 does, then the instances of the platform's projects of
 [`gitops/projects`](../gitops/projects), then the services of the demo project
@@ -275,56 +275,83 @@ ingress-nginx (installed in step 8), port 30053 the sandbox DNS server.
 
 ## Step 8. The platform's dependencies
 
-cert-manager, trust-manager, the cluster issuer and the CA bundle, Reloader and the
-deletion protection, ingress-nginx, the CoreDNS patch (`*.okdp.sandbox`
-resolves to ingress-nginx inside the cluster) and the sandbox DNS server, CloudNativePG,
-External Secrets, Keycloak, its database and the secrets of its realm's clients, RustFS
-and the platform's access key, OpenBao and its init: the commands of sandbox-charts'
+cert-manager, approver-policy and its policies, trust-manager, the cluster issuer and
+the CA bundle, Reloader and the admission policies, ingress-nginx, the CoreDNS patch
+(`*.okdp.sandbox` resolves to ingress-nginx inside the cluster) and the sandbox DNS
+server, CloudNativePG, External Secrets, Keycloak, its database and the secrets of its
+realm's clients, RustFS and the platform's access key, OpenBao and its init: the
+commands of sandbox-charts'
 [bootstrap](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/README.md) (what the README's
 [step 3](../README.md#3-install-the-platforms-dependencies) runs), but Forgejo's and its
 runner's, from the catalog sandbox-charts fetched at step 4, at its `ref`. Each `helm`
 waits for its release (and its hooks: Keycloak's realm, RustFS' buckets and identity).
 The namespaces come first, with their Pod Security levels (`namespaces.yaml`:
-`baseline` enforced, `restricted` warned and audited), which the releases'
-`--create-namespace` find.
+`baseline` enforced, `restricted` warned and audited), and the default deny of the
+ingress of the namespaces whose release brings no NetworkPolicy
+(`network-policies.yaml`), which the releases' `--create-namespace` find.
+
+The charts run with your cluster-admin, so they are installed by what
+`bootstrap/charts.yaml` pins, as `scripts/bootstrap.sh` does: an OCI chart by the
+digest of its manifest (`oci://…@sha256:…`), a chart of a repository from the package
+`helm pull` downloads, once its sha256 is the pinned one (`install_chart` below, which
+refuses the install otherwise); the images are pinned by digest in the values files.
+It needs `helm` (one that installs `oci://…@sha256:…` references: 4.3 tested), `yq`
+v4, `jq` and `awk`. Run the commands one at a time and stop at the first one that
+fails.
 
 ```sh
 cd "$WORK/catalogs/sandbox-charts"
+mkdir -p "$WORK/pkg"
+# install_chart RELEASE [helm options]: a chart of a repository, from its package, if the
+# sha256 of charts.yaml is the package's (macOS: shasum -a 256 -c)
+install_chart() {
+  local rel=$1 r=".releases[\"$1\"]" dir pkg; shift
+  dir="$WORK/pkg/$rel"; rm -rf "$dir"; mkdir -p "$dir"
+  helm pull "$(yq "$r.chart" bootstrap/charts.yaml)" --repo "$(yq "$r.repo" bootstrap/charts.yaml)" \
+    --version "$(yq "$r.version" bootstrap/charts.yaml)" -d "$dir" >/dev/null || return 1
+  pkg="$(ls "$dir"/*.tgz)"
+  echo "$(yq "$r.sha256" bootstrap/charts.yaml)  $pkg" | sha256sum -c - || return 1
+  helm upgrade --install "$rel" "$pkg" -n "$(yq "$r.namespace" bootstrap/charts.yaml)" \
+    --create-namespace --wait "$@"
+}
 kubectl apply -f bootstrap/namespaces.yaml
-helm upgrade --install cert-manager cert-manager --repo https://charts.jetstack.io --version v1.21.2 \
-  -n cert-manager --create-namespace --wait -f bootstrap/cert-manager/values.yaml
-helm upgrade --install trust-manager trust-manager --repo https://charts.jetstack.io --version v0.25.0 \
-  -n cert-manager --create-namespace --wait -f bootstrap/trust-manager/values.yaml
-helm upgrade --install cert-issuers oci://quay.io/okdp/charts/cert-issuers --version 0.2.0 \
+kubectl apply -f bootstrap/network-policies.yaml
+install_chart cert-manager -f bootstrap/cert-manager/values.yaml
+install_chart approver-policy -f bootstrap/approver-policy/values.yaml
+kubectl apply -f bootstrap/approver-policy/policies.yaml
+install_chart trust-manager -f bootstrap/trust-manager/values.yaml
+helm upgrade --install cert-issuers oci://quay.io/okdp/charts/cert-issuers@sha256:b76c3386a1aa7d683b3db7c13a8e3a749073c4c965a4ae6a7dbbebdd46dabfa6 \
   -n cert-manager --create-namespace --wait -f bootstrap/cert-issuers/values.yaml
 kubectl apply -f bootstrap/trust-manager/bundle.yaml
-helm upgrade --install reloader reloader --repo https://stakater.github.io/stakater-charts --version 2.2.17 \
-  -n kube-tools --create-namespace --wait -f bootstrap/reloader/values.yaml
+install_chart reloader -f bootstrap/reloader/values.yaml
 kubectl apply -f bootstrap/protection/policies.yaml
-helm upgrade --install ingress-nginx ingress-nginx --repo https://kubernetes.github.io/ingress-nginx --version 4.15.1 \
-  -n ingress-nginx --create-namespace --wait -f bootstrap/ingress-nginx/values.yaml
+kubectl apply -f bootstrap/protection/ingress-hosts.yaml
+install_chart ingress-nginx -f bootstrap/ingress-nginx/values.yaml
 bootstrap/coredns/patch.sh
-helm upgrade --install dns-server coredns --repo https://coredns.github.io/helm --version 1.47.1 \
-  -n dns-server --create-namespace --wait -f bootstrap/dns-server/values.yaml
-helm upgrade --install cloudnative-pg oci://ghcr.io/cloudnative-pg/charts/cloudnative-pg --version 0.29.1 \
+install_chart dns-server -f bootstrap/dns-server/values.yaml
+helm upgrade --install cloudnative-pg oci://ghcr.io/cloudnative-pg/charts/cloudnative-pg@sha256:3245fa051bb21d0dd9246272f57a2760b4234817a164a3167d2a1e7fb9f63fd9 \
   -n cnpg-system --create-namespace --wait -f bootstrap/cloudnative-pg/values.yaml
-helm upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets --version 2.11.0 \
+helm upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets@sha256:1191874a26691d8377d8ba28bfae54a718dda4750e10d40ae9ae4d570c88acfd \
   -n external-secrets --create-namespace --wait -f bootstrap/external-secrets/values.yaml
 head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' | kubectl -n keycloak create secret generic \
   keycloak-admin --from-file=admin-password=/dev/stdin
 kubectl apply -f bootstrap/keycloak/database.yaml
 kubectl -n keycloak wait clusters.postgresql.cnpg.io/keycloak-db --for=condition=Ready --timeout=10m
 bootstrap/keycloak/client-secrets.sh
-helm upgrade --install keycloak keycloakx --repo https://codecentric.github.io/helm-charts --version 7.3.2 \
-  -n keycloak --create-namespace --wait --timeout 15m \
-  -f bootstrap/keycloak/values.yaml -f bootstrap/keycloak/realm.yaml
-helm upgrade --install rustfs rustfs --repo https://charts.rustfs.com --version 1.0.0 \
-  -n rustfs --create-namespace --wait --timeout 15m -f bootstrap/rustfs/values.yaml
-helm upgrade --install openbao openbao --repo https://openbao.github.io/openbao-helm --version 0.30.4 \
-  -n openbao --create-namespace --wait -f bootstrap/openbao/values.yaml
-bootstrap/openbao/init.sh
+install_chart keycloak --timeout 15m -f bootstrap/keycloak/values.yaml -f bootstrap/keycloak/realm.yaml
+install_chart rustfs --timeout 15m -f bootstrap/rustfs/values.yaml
+install_chart openbao -f bootstrap/openbao/values.yaml
+DCR_NAMESPACES=demo bootstrap/openbao/init.sh
 cd "$OKDP/.."
 ```
+
+`DCR_NAMESPACES` lists the namespaces whose services register their OAuth clients by
+DCR (the README's `DCR_NAMESPACES`, `demo` here): `init.sh` mints an initial access
+token for each and writes it to `<namespace>/keycloak/dcr-token`.
+
+The pins above are those of the catalog's `ref` at the time of writing; the ones to use
+are `bootstrap/charts.yaml`'s (`yq '.releases["cert-issuers"].digest' bootstrap/charts.yaml`),
+and sandbox-charts' bootstrap README lists the same commands.
 
 The platform's identity of the S3 store is in the secret store, under the keys of
 the namespaces of `bootstrap/openbao/s3.yaml`, `demo/s3/platform`, which the demo's

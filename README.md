@@ -194,7 +194,7 @@ GitOps user ──────────────────────�
 |---|---|
 | Catalog of the OKDP services and control plane packages | [`OKDP/platform-charts`](https://github.com/OKDP/platform-charts) |
 | Compiler of the instances (service definitions in YAML + CEL) | [`OKDP/okdp-compiler`](https://github.com/OKDP/okdp-compiler) |
-| Compile of the whole layout, the Argo CD and Flux files, the CI of the sources | [`OKDP/okdp-gitops`](https://github.com/OKDP/okdp-gitops) |
+| Compile of the whole layout, the Argo CD and Flux files, the CI of the output repository | [`OKDP/okdp-gitops`](https://github.com/OKDP/okdp-gitops) |
 | Contract schemas of the connections | the catalogs, `contracts/` |
 | Catalog of the sandbox's platform packages (the provider of the claims of databases) and of optional ones (Keycloak, SeaweedFS, RustFS) | [`OKDP/sandbox-charts`](https://github.com/OKDP/sandbox-charts) |
 | Catalog of the community services (Ollama, DuckDB, Hop, NiFi, Strimzi, K8ssandra) | [`OKDP/community-charts`](https://github.com/OKDP/community-charts) |
@@ -501,10 +501,11 @@ token goes over TLS: the CI's repositories and the catalogs of `catalogs.yaml` a
 `https://forgejo.okdp.sandbox` (`CI_FORGEJO_URL` of `scripts/lib/topology.sh`), the
 job's container mounting the platform's CA bundle the runner's Docker daemon holds
 (`caBundle` of the runner chart) and trusting it, `SSL_CERT_FILE`
-(`GITOPS_RUNNER_CA_FILE`, `CI_CA_FILE`); `CI_INSECURE_HTTP_HOSTS`, the hosts the token
-may reach in clear over `http://`, is empty, and `scripts/check.sh` has
-`okdp-gitops workflow` write the CI's workflow, refused for an `http://` host), and
-the runner's registration secret to `forgejo/okdp-runner-registration`, nowhere else.
+(`GITOPS_RUNNER_CA_FILE`, `CI_CA_FILE`). `CI_INSECURE_HTTP_HOSTS`, the hosts the token
+may reach in clear over `http://`, is empty: `okdp-gitops workflow` refuses a topology
+with an `http://` URL of any other host, and `scripts/check.sh` refuses a catalog of
+`catalogs.yaml` over `http://`), and the runner's registration secret to
+`forgejo/okdp-runner-registration`, nowhere else.
 The output repository's `main` is protected: `okdp-ci` alone pushes there (its
 push whitelist), never the admin, the console nor a person, no force push; the
 script pushes the sources as the admin and the output as `okdp-ci`. A repository the

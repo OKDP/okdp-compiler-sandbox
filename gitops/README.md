@@ -782,11 +782,18 @@ scripts/e2e-kind.sh               # end-to-end install on a throwaway kind clust
 scripts/lib/                      # shared by the scripts (topology, catalogs, Forgejo)
 ```
 
-- `scripts/bootstrap.sh [--dir DIR] [--catalog NAME=SRC]... [--allow-branch]`: installs the platform's
+- `scripts/bootstrap.sh [--dir DIR] [--catalog NAME=SRC]... [--allow-branch]
+  [--gitops-digest sha256:...]`: installs the platform's
   dependencies into the cluster of the current context, the releases of sandbox-charts'
-  `bootstrap/charts.yaml` with their values and the steps between them (the CA bundle,
-  the deletion protection, the CoreDNS patch, Keycloak's database, OpenBao's init),
-  the README's step 3; idempotent. `bootstrap/` is read as the catalogs are (at the
+  `bootstrap/charts.yaml` with their values and the steps between them (the namespaces
+  and their default deny, the approver and its policies, the CA bundle, the deletion
+  protection and the admission bounds, the CoreDNS patch, Keycloak's database,
+  OpenBao's init for `DCR_NAMESPACES`), the README's step 3; idempotent. Every chart
+  is installed by the content `charts.yaml` pins (the sha256 of a repository chart's
+  package, checked before the install; the digest of an OCI chart), and the CI
+  runner's okdp-gitops image by `--gitops-digest` (or `OKDP_GITOPS_IMAGE_DIGEST`, or
+  the runner's values with `--dir`): nothing is installed without one.
+  `bootstrap/` is read as the catalogs are (at the
   `ref` of sandbox-charts in `catalogs.yaml`), or `--dir DIR` as it is. Its scripts
   run with the operator's cluster-admin: from a Git URL (GitHub), the commit pinned,
   fetched by its hash, a branch or a tag refused unless `--allow-branch`; a

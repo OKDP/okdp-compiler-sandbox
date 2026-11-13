@@ -166,7 +166,7 @@ release() {
     [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "charts.yaml: release $1: digest $digest is not sha256:<64 hex>"
     chart="$chart@$digest"
   elif [[ -n "$repo" ]]; then
-    [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "charts.yaml: release $1 (chart $chart of $repo): no sha256 of its package, nothing is installed unpinned (scripts/bump-bootstrap.sh prints it)"
+    [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "charts.yaml: release $1 (chart $chart of $repo): no sha256 of its package, nothing is installed unpinned (sandbox-charts' scripts/bump-bootstrap.sh prints it)"
     pull="$(mktemp -d)"
     helm pull "$chart" --repo "$repo" --version "$version" -d "$pull" >/dev/null 2>"$pull/log" \
       || { cat "$pull/log" >&2; rm -rf "$pull"; die "helm pull of $chart $version from $repo failed"; }
@@ -175,7 +175,7 @@ release() {
     got="$(sha256sum "$pkg" | cut -d' ' -f1)"
     if [[ "$got" != "$sha" ]]; then
       rm -rf "$pull"
-      die "chart $chart $version of $repo: the package's sha256 is $got, not the $sha pinned for release $1 in charts.yaml: refused (scripts/bump-bootstrap.sh)"
+      die "chart $chart $version of $repo: the package's sha256 is $got, not the $sha pinned for release $1 in charts.yaml: refused (sandbox-charts' scripts/bump-bootstrap.sh)"
     fi
     chart="$pkg"
   else

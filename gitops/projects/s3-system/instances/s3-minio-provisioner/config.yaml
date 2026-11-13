@@ -9,3 +9,7 @@
 # bound to it (the demo's services name their project's connection platform-s3, the
 # platform's buckets: no package claims a bucket by default).
 store: rustfs
+# The buckets it creates carry the tag okdp.io/claim=<claim ID>; a bucket of a claim's
+# name that exists without it (made by an operator, or by an earlier version of this
+# package, which tagged none) is refused, the claim given nothing. To take the buckets
+# of an earlier run once, set `adopt: true` for one run (they are tagged), then remove it.

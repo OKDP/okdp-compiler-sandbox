@@ -47,7 +47,7 @@
 #   of the topology (private), copies the service catalogs of catalogs.yaml (their
 #   ref, from --catalog, else the checkouts next to this repository, else GitHub),
 #   gives each its own Forgejo account, none an admin, through teams of the
-#   repositories it needs only (scripts/lib/forgejo.sh, forgejo_accounts): okdp-ci,
+#   repositories it needs only (scripts/lib/forgejo-accounts.sh, forgejo_accounts): okdp-ci,
 #   the CI, writes the output and reads the sources and the catalogs, its token
 #   (write:repository) the Actions secret OKDP_GITOPS_TOKEN of the output repository
 #   only; okdp-reader, the engines, reads the output only, its token (read:repository)
