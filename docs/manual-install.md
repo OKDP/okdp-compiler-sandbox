@@ -230,8 +230,8 @@ and writes nothing. Fix the instance and run `compile` again.
 
 The compiled directory of an instance holds the umbrella chart over the upstream charts
 of its service (`Chart.yaml`), its values (`instance.values.yaml`), and, when the
-instance has some, OKDP's own objects (`okdp.objects.yaml`, rendered by
-`templates/okdp.yaml`: a claimer's `ExternalSecret`, which copies the credentials of its
+instance has some, OKDP's own objects (under `okdp-objects` in the values, rendered by
+that chart: a claimer's `ExternalSecret`, which copies the credentials of its
 claims; the `ExternalSecret` of the platform's S3 connection, which reads its
 credentials from the platform's secret store; a provider's databases and
 `PushSecret`s) and what it publishes (`okdp.info.yaml`: a provider's connections, one per

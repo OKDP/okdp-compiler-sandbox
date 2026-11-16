@@ -601,7 +601,7 @@ okdp-compiler's targets, each marked generated on its first line
 | File | Content |
 |---|---|
 | `compiled/projects/<p>/instances/<r>/Chart.yaml`, `instance.values.yaml` | the umbrella chart (the package's `Chart.yaml`, its dependencies the upstream charts it renders, the OAuth client charts in `dcr` mode) and its values |
-| `.../okdp.objects.yaml`, `templates/okdp.yaml` | the instance's objects (its package's, the ExternalSecrets of its claims and of the connections in the secret store, a provider's PushSecrets), rendered by the umbrella as written |
+| `okdp-objects` in `.../instance.values.yaml` | the instance's objects (its package's, the ExternalSecrets of its claims and of the connections in the secret store, a provider's PushSecrets), rendered as written by the `okdp-objects` chart |
 | `.../okdp.info.yaml` | what the instance publishes: its URL, usage and the connections it provides (what the console shows of the instance and offers to the others) |
 | `.../application.yaml` | Argo CD: Application `argocd/<r>` (release `<r>`, namespace `<p>`, AppProject `project-<p>`), its source the instance's directory of the repository of `argocd/root.yaml` with `instance.values.yaml`, its sync wave after the instances it waits for; written when the output has `argocd/root.yaml` |
 | `.../helmrelease.yaml` | Flux: HelmRelease `okdp-releases/<r>` (release `<r>`, namespace `<p>`), its chart built from GitRepository `okdp-gitops` at the instance's directory, its values from the ConfigMap `values-<r>` alone, `dependsOn` the instances it waits for |

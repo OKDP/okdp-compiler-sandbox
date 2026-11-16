@@ -326,8 +326,10 @@ else
   sa_ns="$(yq -r '.global.okdp.controlPlane.serviceAccount.namespace // ""' "$ROOT/platform.yaml")"
   sa_name="$(yq -r '.global.okdp.controlPlane.serviceAccount.name // ""' "$ROOT/platform.yaml")"
   if [[ -n "$sa_name" ]]; then
-    rendered="$(find "$OUT/compiled/projects/$sa_ns/instances" -name okdp.objects.yaml -exec \
-      yq -r 'select(.kind == "ServiceAccount") | .metadata.name' {} + 2>/dev/null)"
+    rendered="$(find "$OUT/compiled/projects/$sa_ns/instances" -name instance.values.yaml -print0 |
+      while IFS= read -r -d '' values; do
+        yq -r '.["okdp-objects"].manifests // ""' "$values" | yq -r 'select(.kind == "ServiceAccount") | .metadata.name'
+      done 2>/dev/null)"
     grep -qxF "$sa_name" <<<"$rendered" \
       || fail "platform.yaml: global.okdp.controlPlane.serviceAccount $sa_ns/$sa_name is no ServiceAccount the instances of $sa_ns render ($(tr '\n' ' ' <<<"$rendered")): the server would get no rights in the projects' namespaces"
   fi
@@ -397,6 +399,19 @@ elif $HELM; then
     # The umbrella, its dependencies fetched from their repositories.
     chart="$TMP/umbrella/$r"
     rm -rf "$chart"; mkdir -p "$chart"; cp -R "$out/." "$chart"; rm -rf "$chart/charts" "$chart/Chart.lock"
+    # The objects' chart is in the sandbox's registry, okdp-registry:5000 from
+    # the cluster, 127.0.0.1:5001 from here, plain HTTP: pulled, then named by
+    # its directory, the other OCI dependencies staying on TLS.
+    objects="$(yq '.dependencies[] | select(.name == "okdp-objects") | .version' "$chart/Chart.yaml")"
+    if [[ -n "$objects" ]]; then
+      if [[ ! -d "$TMP/okdp-objects-$objects" ]]; then
+        helm pull "${OKDP_OBJECTS_REPOSITORY:-oci://127.0.0.1:5001/okdp/charts}/okdp-objects" --version "$objects" \
+          --plain-http --untar -d "$TMP/okdp-objects-$objects" >"$TMP/.helm.log" 2>&1 \
+          || { fail "helm pull okdp-objects $objects $rel"; grep -v 'failed to load plugins' "$TMP/.helm.log" | sed 's/^/   /'; continue; }
+      fi
+      DIR="file://$TMP/okdp-objects-$objects/okdp-objects" \
+        yq -i '(.dependencies[] | select(.name == "okdp-objects") | .repository) = strenv(DIR)' "$chart/Chart.yaml"
+    fi
     helm dependency build "$chart" >"$TMP/.helm.log" 2>&1 \
       || { fail "helm dependency build $rel"; grep -v 'failed to load plugins' "$TMP/.helm.log" | sed 's/^/   /'; continue; }
     if helm template "$r" "$chart" -n "$p" -f "$out/instance.values.yaml" >"$TMP/.helm.out" 2>"$TMP/.helm.log"; then

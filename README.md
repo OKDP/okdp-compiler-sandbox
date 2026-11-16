@@ -343,6 +343,12 @@ server = "http://okdp-registry:5000"
 EOF
 ```
 
+The chart of the instances' objects comes from this registry too, until it is
+published (`global.okdp.charts.objects` in `gitops/platform.yaml`). Push it while the
+registry is writable, from a checkout of `okdp-objects-chart` next to this repository:
+`make -C ../okdp-objects-chart push-local`. `scripts/check.sh --helm` reads it at
+`127.0.0.1:5001` (`OKDP_OBJECTS_REPOSITORY` names another).
+
 The CI runner's values, sandbox-charts'
 [`bootstrap/forgejo-runner/values.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/forgejo-runner/values.yaml),
 name it by default; the runner's NetworkPolicy lets its pod out to that registry

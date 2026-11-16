@@ -92,8 +92,8 @@ env:
   # the test). TODO(okdp-compiler): releases, once the feat/claim-provisioner
   # branches land. Bump the three together.
   OKDP_CONTROL_PLANE_SERVER_REF: 06c90c0b46bba0d032c2f1f704fc6fb538d8fc30
-  OKDP_GITOPS_REF: b2bb34dfd3b68405ffa971f48b3263828c2bdfa8
-  OKDP_COMPILER_REF: 94e7e2d6712854a09b95aec1caac22a4068714a3
+  OKDP_GITOPS_REF: ed6b455cff9eb7bc00067316fb5fe178c1625734
+  OKDP_COMPILER_REF: a6f9dd96079f97fd3b972c2872e486f922fc84d5
   E2E_SERVER_IMAGE: okdp-control-plane-server:e2e
   E2E_GITOPS_IMAGE: okdp-gitops:e2e
   E2E_LOAD_IMAGES: okdp-control-plane-server:e2e okdp-gitops:e2e

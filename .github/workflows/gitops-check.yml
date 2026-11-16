@@ -64,8 +64,8 @@ env:
   # The commits the layout is checked with, fetched by SHA (a branch moves under
   # the check), the same as deploy-validation.yml's. TODO(okdp-compiler):
   # releases, once the feat/claim-provisioner branches land.
-  OKDP_GITOPS_REF: b2bb34dfd3b68405ffa971f48b3263828c2bdfa8
-  OKDP_COMPILER_REF: 94e7e2d6712854a09b95aec1caac22a4068714a3
+  OKDP_GITOPS_REF: ed6b455cff9eb7bc00067316fb5fe178c1625734
+  OKDP_COMPILER_REF: a6f9dd96079f97fd3b972c2872e486f922fc84d5
 
 jobs:
   check:

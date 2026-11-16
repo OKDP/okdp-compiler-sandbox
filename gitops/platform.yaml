@@ -26,6 +26,13 @@
 # see catalogs.yaml. The control plane server reads this file from Git.
 global:
   okdp:
+    # The chart of the instances' objects, from the sandbox's registry (README).
+    # TODO(okdp-compiler): temporary registry, drop once okdp-objects is published.
+    charts:
+      objects:
+        repository: oci://okdp-registry:5000/okdp/charts
+        chart: okdp-objects
+        version: 2.0.0
     # The platform's ingress controller and certificate issuer (tls.clusterIssuer
     # below), by the names every service and the bootstrap's dependencies use: the
     # bootstrap's ingress-nginx (class nginx) and cert-manager (the cluster issuer
