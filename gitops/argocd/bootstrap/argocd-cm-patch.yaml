@@ -19,7 +19,7 @@
 # directory):
 #   kubectl -n argocd patch configmap argocd-cm --type merge \
 #     --patch-file gitops/argocd/bootstrap/argocd-cm-patch.yaml
-# The health of an Application is its own status: the app of apps (instances.yaml)
+# The health of an Application is its own status: each project's parent (instances.yaml)
 # then applies a sync wave once the Applications of the previous waves are Healthy,
 # the order of the instances that wait for others (Argo CD assesses no health of
 # Applications by default).

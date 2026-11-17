@@ -57,8 +57,16 @@ tls:
 keycloak:
   credentialsSecret:
     name: okdp-control-plane-keycloak
+# The SQL editor's statements on Trino run with the caller's token exchanged for the
+# audience trino (the realm's token exchange, sandbox-charts'
+# bootstrap/keycloak/realm.yaml), by the client of keycloak.credentialsSecret above.
+sqlEditor:
+  tokenExchangeAudience: trino
 # TODO(okdp-compiler): temporary registry, revert to quay.io/okdp once the OKDP images are published there.
 # TODO(okdp-compiler): the image must be a server that compiles the instances it
 # writes (okdp-control-plane-server, okdp-compiler branch): none is published yet;
-# scripts/e2e-kind.sh builds one (E2E_SERVER_IMAGE).
+# scripts/e2e-kind.sh builds one (E2E_SERVER_IMAGE) and names it by digest. imageTag
+# takes <tag>@sha256:... (the package writes <repository>:<imageTag>): pin it here
+# as soon as an image is published; until then the tag of the package, over the plain
+# HTTP of repo.alliage.io:8082.
 imageRepository: repo.alliage.io:8082/okdp/images/okdp-control-plane-server

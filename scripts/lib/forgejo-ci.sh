@@ -32,11 +32,16 @@
 # token of the CI (forgejo_ci_token): it reads the sources and writes the output, over
 # https:// at CI_FORGEJO_URL (the job trusts the platform's CA bundle, CI_CA_FILE), and
 # over http:// only to the hosts of CI_INSECURE_HTTP_HOSTS (none by default), the job's
-# environment carrying them. A run whose sources did not move since the last
+# environment carrying them; the chart hosts the job's chart puller may reach at a
+# private address and over plain HTTP (CI_PRIVATE_CHART_HOSTS, CI_INSECURE_CHART_HOSTS,
+# the registry of okdp-objects) likewise. A
+# run whose sources did not move since the last
 # compile (sources.yaml of the output) stops early; no push starts a run.
 forgejo_output_workflow() {
   mkdir -p "$1/.forgejo/workflows"
   GITOPS_INSECURE_HTTP_HOSTS="$CI_INSECURE_HTTP_HOSTS" GITOPS_RUNNER_CA_FILE="$CI_CA_FILE" \
+    GITOPS_PRIVATE_CHART_HOSTS="$CI_PRIVATE_CHART_HOSTS" \
+    GITOPS_INSECURE_CHART_HOSTS="$CI_INSECURE_CHART_HOSTS" \
     "${OKDP_GITOPS:-okdp-gitops}" workflow --for output \
     --config "$2" >"$1/.forgejo/workflows/okdp-gitops.yaml"
 }

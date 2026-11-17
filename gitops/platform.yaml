@@ -32,7 +32,7 @@ global:
       objects:
         repository: oci://okdp-registry:5000/okdp/charts
         chart: okdp-objects
-        version: 2.0.0
+        version: 0.1.0
     # The platform's ingress controller and certificate issuer (tls.clusterIssuer
     # below), by the names every service and the bootstrap's dependencies use: the
     # bootstrap's ingress-nginx (class nginx) and cert-manager (the cluster issuer
@@ -233,7 +233,10 @@ global:
     # the buckets: a Job and the claims' Secrets and PushSecrets), default (the Spark
     # ServiceAccount and Role of its namespace). The platform's prerequisites
     # (cert-manager, ingress-nginx, the tools, the DNS, Forgejo and its CI runner) are
-    # the bootstrap's, not projects (README, step 3).
+    # the bootstrap's, not projects (README, step 3). Each namespace listed here is
+    # labelled okdp.io/platform: "true" by sandbox-charts' bootstrap/namespaces.yaml,
+    # the one list the admission policies and approver-policy read: scripts/check.sh
+    # fails when the two differ.
     policy:
       privileged:
         # The Spark operator: CRDs, webhooks, cluster roles, the Spark jobs of every

@@ -1,0 +1,37 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+# The registry of the okdp-objects chart, a dependency of every compiled umbrella
+# (global.okdp.charts.objects of platform.yaml): the sandbox's registry, plain HTTP
+# (README, step 2, until okdp-objects is published). Same address as the
+# HelmRepository of gitops/flux/sync.yaml. No credential: the registry is anonymous.
+# Argo CD v3.4.2 (Helm 3.19) needs no entry to reach it: helm dependency build falls
+# back to plain HTTP by itself (Helm 3's OCI client). This Secret is what Argo CD 3.5
+# (Helm 4, which has no fallback) requires, passing --plain-http to the dependency
+# build.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: okdp-objects-registry
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: helm
+  name: okdp-objects
+  url: okdp-registry:5000/okdp/charts
+  enableOCI: "true"
+  insecureOCIForceHttp: "true"

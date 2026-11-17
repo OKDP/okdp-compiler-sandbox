@@ -95,3 +95,21 @@ spec:
           name: not-used
           annotations:
             kustomize.toolkit.fluxcd.io/prune: disabled
+---
+# The registry of the okdp-objects chart, a dependency of every compiled umbrella
+# (global.okdp.charts.objects of platform.yaml): its URL as Chart.yaml names it.
+# source-controller builds an umbrella of the GitRepository above in flux-system, and
+# resolves its OCI dependencies with the HelmRepository of that URL in that namespace,
+# whose insecure makes the registry client use plain HTTP: the sandbox's registry has
+# no TLS (README, step 2, until okdp-objects is published). Same address in
+# gitops/argocd/okdp-objects-registry.yaml.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: okdp-objects
+  namespace: flux-system
+spec:
+  type: oci
+  interval: 1h
+  url: oci://okdp-registry:5000/okdp/charts
+  insecure: true

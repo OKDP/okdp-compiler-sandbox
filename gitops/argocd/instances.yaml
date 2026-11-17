@@ -18,24 +18,30 @@
 # The instances: the Application <project>-<instance> okdp-compiler's Argo CD target
 # writes for each, compiled/projects/<project>/instances/<release>/application.yaml
 # (the umbrella chart of that directory in the output repository, with its
-# instance.values.yaml), applied by this Application (app of apps), from the output
-# repository only. Each belongs to the AppProject project-<project>, of the project's
-# manifests (projects.yaml): the namespace <project> only and no cluster-scoped kind,
-# unless the project is one of the platform's own (global.okdp.policy.privileged of
-# platform.yaml). An Application applied before its AppProject or its namespace
-# exists is retried.
+# instance.values.yaml), applied by the parent of its project, from the output
+# repository only: one Application okdp.instances.<p> per compiled project,
+# compiled/projects/<p>/ (ApplicationSet okdp.instances; <p> is the directory name,
+# never a value read from a file of the project). Each instance belongs to the
+# AppProject project-<project>, of the project's manifests (projects.yaml): the
+# namespace <project> only and no cluster-scoped kind, unless the project is one of
+# the platform's own (global.okdp.policy.privileged of platform.yaml). An Application
+# applied before its AppProject or its namespace exists is retried.
 # Their sync waves follow the instances each waits for (references, claims): a wave is
 # applied when the Applications of the previous ones are Healthy, which needs the health
-# assessment of Applications in argocd-cm (bootstrap/argocd-cm-patch.yaml). An
+# assessment of Applications in argocd-cm (bootstrap/argocd-cm-patch.yaml). A wave
+# waits for the previous wave of its own parent only: hence one parent per project, as
+# with a parent of the whole tree one project's Degraded Application would stop every
+# later wave of every other project. A provider and the instances that claim from it
+# in other projects are ordered by the retries of the Applications waiting for it. An
 # instance applied before the CRDs of its operator is retried.
 # Named with a dot, which no release, <project>-<instance> (a DNS label), can take:
-# an Application okdp-instances would be the one of the instance instances of a
-# project okdp, which would replace this one and prune every Application it applies.
-# The platform's own objects of the engines' namespaces (argocd, flux-system,
-# okdp-releases) all take a name no release can: a dot, or no dash (okdp).
-# Its AppProject, okdp.instances, lets it write Applications in argocd and nothing
+# an Application okdp-instances-<p> would be the one of the instance instances-<p> of a
+# project okdp, which would replace this project's parent and prune every Application
+# it applies. The platform's own objects of the engines' namespaces (argocd,
+# flux-system, okdp-releases) all take a name no release can: a dot, or no dash (okdp).
+# Their AppProject, okdp.instances, lets them write Applications in argocd and nothing
 # else: no other kind, no other namespace, no cluster-scoped object, the output
-# repository its only source. What each instance deploys is the AppProject its
+# repository their only source. What each instance deploys is the AppProject its
 # Application names, project-<project>, never this one's (Argo CD does not let an
 # AppProject choose the projects of the Applications it writes: the compiler
 # writes project-<project> in each, and okdp-ci alone writes the output).
@@ -45,7 +51,7 @@ metadata:
   name: okdp.instances
   namespace: argocd
 spec:
-  description: The app of apps of the instances, Applications in argocd only.
+  description: The parents of each project's instances, Applications in argocd only.
   sourceRepos:
     - http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
   destinations:
@@ -57,30 +63,46 @@ spec:
       kind: Application
 ---
 apiVersion: argoproj.io/v1alpha1
-kind: Application
+kind: ApplicationSet
 metadata:
   name: okdp.instances
   namespace: argocd
 spec:
-  project: okdp.instances
-  source:
-    repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
-    targetRevision: main
-    path: compiled/projects
-    directory:
-      recurse: true
-      include: '*/instances/*/application.yaml'
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: argocd
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    retry:
-      # Unlimited: an instance may wait for another on a first install.
-      limit: -1
-      backoff:
-        duration: 10s
-        factor: 2
-        maxDuration: 5m
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
+        revision: main
+        directories:
+          - path: compiled/projects/*
+  template:
+    metadata:
+      name: 'okdp.instances.{{ .path.basename }}'
+      # A project gone from the output takes its instances' Applications with it.
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: okdp.instances
+      source:
+        repoURL: http://forgejo-http.forgejo.svc.cluster.local:3000/okdp/okdp-output.git
+        targetRevision: main
+        path: 'compiled/projects/{{ .path.basename }}'
+        # A plain directory, explicitly: the Flux target's kustomization.yaml is there.
+        directory:
+          recurse: true
+          include: 'instances/*/application.yaml'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: argocd
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          # Unlimited: an instance may wait for another on a first install.
+          limit: -1
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 5m

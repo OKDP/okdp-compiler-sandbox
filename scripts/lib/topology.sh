@@ -229,6 +229,15 @@ CI_CA_FILE="${CI_CA_FILE:-/etc/okdp/ca/ca.crt}"
 # topology or a catalog named. The workflow carries it, as GITOPS_INSECURE_HTTP_HOSTS
 # of the job's environment.
 CI_INSECURE_HTTP_HOSTS="${CI_INSECURE_HTTP_HOSTS:-}"
+# CI_PRIVATE_CHART_HOSTS: the chart hosts the CI's chart puller may reach at a private
+# address (comma separated, as okdp-gitops' GITOPS_PRIVATE_CHART_HOSTS, which the
+# workflow carries): the sandbox's registry of the okdp-objects chart
+# (global.okdp.charts.objects of platform.yaml).
+CI_PRIVATE_CHART_HOSTS="${CI_PRIVATE_CHART_HOSTS:-okdp-registry:5000}"
+# CI_INSECURE_CHART_HOSTS: those the puller reaches over plain HTTP (comma separated,
+# okdp-gitops' GITOPS_INSECURE_CHART_HOSTS, which the workflow carries; any other
+# host is refused): the same registry, which serves no TLS.
+CI_INSECURE_CHART_HOSTS="${CI_INSECURE_CHART_HOSTS:-okdp-registry:5000}"
 
 # The output repository of a topology: compiled/, argocd/ at its root, a repository
 # of its own in every topology.

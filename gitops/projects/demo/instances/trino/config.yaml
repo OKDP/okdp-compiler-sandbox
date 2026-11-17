@@ -27,3 +27,5 @@ icebergCatalogs:
     oidcSecretRef: demo-polaris-root
 # The reference OPA policy only knows named users, which the sandbox does not provision.
 enableOPA: false
+# The audience of the control plane's exchanged tokens (SQL editor, sqlEditor.tokenExchangeAudience).
+oauth2AdditionalAudiences: [trino]
