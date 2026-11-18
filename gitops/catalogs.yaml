@@ -42,13 +42,13 @@
 repositories:
   - name: platform-charts
     url: https://forgejo.okdp.sandbox/okdp/platform-charts.git
-    ref: 02af3f82b83a674cccbbd8a89bbd40a8178d44f9
+    ref: 54b01f675f9d0f231fecc4869d32a9bd60f4171f
   - name: sandbox-charts
     url: https://forgejo.okdp.sandbox/okdp/sandbox-charts.git
-    ref: e1e0873d03fec5cc0fe37346af4c90695074b4f9
+    ref: c11f83c50b6035edb0898a6dfc25823ff2ed5769
   - name: community-charts
     url: https://forgejo.okdp.sandbox/okdp/community-charts.git
-    ref: 280a00ee8ebf93bfe6f17272f266627d24a0ca66
+    ref: e0c895f7254ab19404d92ef067fe748409cc25e8
 # Console sidebar, one section per entry, in this order. A service sits in
 # the section it is listed under. Icons are PrimeIcons names. A service's versions
 # are the catalog/<service>/<version>/ directories of its catalog; the console

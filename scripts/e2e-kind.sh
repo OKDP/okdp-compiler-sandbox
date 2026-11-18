@@ -37,13 +37,17 @@
 # What is pushed is a copy of the layout at E2E_REF, adapted for the test:
 #   - scripts/configure.sh sets the control plane server's gitops.engine to the engine
 #     under test and the topology to E2E_TOPOLOGY;
+#   - the registry of README step 2, okdp-registry on the kind network (127.0.0.1:5001
+#     from here, okdp-registry:5000 from the cluster, plain HTTP): started writable,
+#     the images below given without a digest pushed there and named by theirs, the
+#     chart okdp-objects pushed (E2E_OBJECTS_CHART, make push-local), then recreated
+#     read-only, and the node's containerd told to pull from it;
 #   - E2E_SERVER_IMAGE and E2E_UI_IMAGE (repository[:tag][@sha256:...]) replace the images of the
-#     control plane (load them with E2E_LOAD_IMAGES), E2E_GITOPS_IMAGE the
-#     okdp-gitops image of the CI's jobs (sandbox-charts' bootstrap/forgejo-runner), which the runner's
-#     own Docker daemon pulls from its registry (an image loaded into the node is not
-#     seen: push it to a registry), its registry added to the runner's
-#     insecureRegistries (plain HTTP allowed) and to its egress
-#     (networkPolicy.registries: the runner's NetworkPolicy lets out the
+#     control plane, E2E_GITOPS_IMAGE the okdp-gitops image of the CI's jobs
+#     (sandbox-charts' bootstrap/forgejo-runner), which the runner's own Docker
+#     daemon pulls from its registry (an image loaded into the node is not seen),
+#     its registry added to the runner's insecureRegistries (plain HTTP allowed) and to
+#     its egress (networkPolicy.registries: the runner's NetworkPolicy lets out the
 #     bootstrap's okdp-registry:5000 of the kind network and the internet's 443
 #     only): E2E_GITOPS_REGISTRY_CIDR, else the address of the registry's host, a
 #     container of the kind network (docker inspect) or a name the host resolves,
@@ -65,11 +69,14 @@
 #   E2E_REF       Git ref of this repository to deploy, default HEAD (commit first)
 #   E2E_TOPOLOGY  io (default) or split (scripts/configure.sh --topology)
 #   OKDP_CATALOGS "NAME=DIR|URL ..." where the catalogs are read from
-#   E2E_SERVER_IMAGE, E2E_UI_IMAGE   images of the control plane (repository[:tag][@sha256:...])
-#   E2E_GITOPS_IMAGE         the okdp-gitops image of the CI's jobs, in a registry, by digest
-#                            (repository[:tag]@sha256:...: it receives the output repository's
-#                            write token; without a digest, the one the local Docker holds
-#                            for that reference, else the script stops)
+#   E2E_SERVER_IMAGE, E2E_UI_IMAGE   images of the control plane (repository[:tag][@sha256:...]);
+#                            without a digest, a local image, pushed to okdp-registry
+#   E2E_GITOPS_IMAGE         the okdp-gitops image of the CI's jobs (it receives the output
+#                            repository's write token): repository[:tag]@sha256:... of a
+#                            registry, or, without a digest, a local image, pushed to
+#                            okdp-registry and named by the digest of that push
+#   E2E_OBJECTS_CHART        checkout of okdp-objects-chart, pushed to okdp-registry
+#                            (default: next to this repository)
 #   E2E_GITOPS_REGISTRY_CIDR the runner's egress to that registry (a CIDR, its port
 #                            the image's registry's), default its host's address
 #   OKDP_GITOPS   the okdp-gitops binary (default: okdp-gitops in PATH)
@@ -85,7 +92,7 @@
 set -euo pipefail
 
 ACTION="${1:-}"; ENGINE="${2:-}"
-[[ "$ACTION" =~ ^(up|push|down)$ && "$ENGINE" =~ ^(argocd|flux)$ ]] || { sed -n '18,80p' "$0"; exit 2; }
+[[ "$ACTION" =~ ^(up|push|down)$ && "$ENGINE" =~ ^(argocd|flux)$ ]] || { sed -n '18,90p' "$0"; exit 2; }
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPTS/../gitops" && pwd)"
@@ -99,6 +106,7 @@ E2E_SERVER_IMAGE="${E2E_SERVER_IMAGE:-}"
 E2E_UI_IMAGE="${E2E_UI_IMAGE:-}"
 E2E_GITOPS_IMAGE="${E2E_GITOPS_IMAGE:-}"
 E2E_GITOPS_REGISTRY_CIDR="${E2E_GITOPS_REGISTRY_CIDR:-}"
+E2E_OBJECTS_CHART="${E2E_OBJECTS_CHART:-$SCRIPTS/../../okdp-objects-chart}"
 ARGOCD_VERSION="${ARGOCD_VERSION:-v3.4.2}"
 # sha256 of https://raw.githubusercontent.com/argoproj/argo-cd/$ARGOCD_VERSION/manifests/install.yaml
 # (curl -fsSL "$url" | sha256sum, checked against the release). Update both together,
@@ -156,6 +164,57 @@ split_image() {
     || { log "image $1: the digest must be sha256:<64 hex>"; exit 1; }
 }
 
+# registry_start [readonly]: the registry of README step 2, recreated on its volume,
+# writable or read-only, and waited for (the kind network exists from the first
+# kind cluster on).
+registry_start() {
+  local args=()
+  [[ "${1:-}" != readonly ]] || args=(-e 'REGISTRY_STORAGE_MAINTENANCE_READONLY={"enabled":true}')
+  docker rm -f okdp-registry >/dev/null 2>&1 || true
+  docker run -d --restart=always --name okdp-registry --network kind -p 127.0.0.1:5001:5000 \
+    -v okdp-registry-data:/var/lib/registry "${args[@]}" registry:2 >/dev/null
+  local deadline=$((SECONDS + 60))
+  until curl -fs http://127.0.0.1:5001/v2/ >/dev/null; do
+    (( SECONDS < deadline )) || { log "okdp-registry does not answer on 127.0.0.1:5001"; exit 1; }
+    sleep 1
+  done
+}
+
+# registry_push_image VARIABLE NAME: a local image, the value of the variable VARIABLE
+# given without a digest, pushed as NAME:e2e, the variable set to its reference from
+# the cluster, by digest. Given with a digest, it is left alone: already in a registry.
+registry_push_image() {
+  local ref="${!1}" target digest
+  [[ -n "$ref" && "$ref" != *@sha256:* ]] || return 0
+  target="127.0.0.1:5001/$2:e2e"
+  docker tag "$ref" "$target" || { log "$1=$ref: no such local image, and no digest: build it, or give repository[:tag]@sha256:..."; exit 1; }
+  digest="$(docker push "$target" | awk '/digest:/ {print $3}' | tail -n 1)"
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { log "$1: no digest from the push of $target"; exit 1; }
+  log "$1: okdp-registry:5000/$2:e2e@$digest"
+  printf -v "$1" '%s' "okdp-registry:5000/$2:e2e@$digest"
+}
+
+# registry_prepare: README step 2: the registry, the images and the chart okdp-objects
+# pushed while it is writable, then read-only so that nothing a pod pushes later is ever
+# pulled, and the node's containerd told about it (plain HTTP).
+registry_prepare() {
+  log "the registry okdp-registry: the images, the chart okdp-objects, then read-only"
+  registry_start
+  registry_push_image E2E_GITOPS_IMAGE okdp-gitops
+  registry_push_image E2E_SERVER_IMAGE okdp-control-plane-server
+  registry_push_image E2E_UI_IMAGE okdp-control-plane-ui
+  [[ -f "$E2E_OBJECTS_CHART/Makefile" ]] \
+    || { log "E2E_OBJECTS_CHART=$E2E_OBJECTS_CHART: no checkout of okdp-objects-chart, the instances' chart would be missing"; exit 1; }
+  make -C "$E2E_OBJECTS_CHART" push-local
+  registry_start readonly
+  docker exec "$CLUSTER-control-plane" mkdir -p /etc/containerd/certs.d/okdp-registry:5000
+  docker exec -i "$CLUSTER-control-plane" tee /etc/containerd/certs.d/okdp-registry:5000/hosts.toml >/dev/null <<'HOSTS'
+server = "http://okdp-registry:5000"
+[host."http://okdp-registry:5000"]
+  capabilities = ["pull", "resolve"]
+HOSTS
+}
+
 # prepare_copy: $COPY =the repository at E2E_REF with the test adaptations,
 # committed on top of E2E_REF (a fresh history each time: the push is forced), and
 # $BOOTSTRAP_COPY = the bootstrap/ of the catalog sandbox-charts as the copy's
@@ -189,13 +248,9 @@ prepare_copy() {
   if [[ -n "$E2E_GITOPS_IMAGE" ]]; then
     split_image "$E2E_GITOPS_IMAGE"
     # The CI's image receives the output repository's write token: by digest, the
-    # runner's chart refuses to render without one. Not given: the digest the local
-    # Docker holds for that reference (docker push sets it), else an error.
-    if [[ -z "$IMAGE_DIGEST" ]]; then
-      IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$E2E_GITOPS_IMAGE" 2>/dev/null | sed -n 's/^[^@]*@//p' || true)"
-      [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
-        || { log "E2E_GITOPS_IMAGE has no digest: set it to <repository>[:tag]@sha256:... (docker inspect --format '{{index .RepoDigests 0}}' <image>, after docker push)"; exit 1; }
-    fi
+    # runner's chart refuses to render without one (registry_push_image names it so).
+    [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
+      || { log "E2E_GITOPS_IMAGE has no digest"; exit 1; }
     REPO="$IMAGE_REPO" TAG="$IMAGE_TAG" DIGEST="$IMAGE_DIGEST" \
       yq -i '.okdpGitopsImage.repository = strenv(REPO) | .okdpGitopsImage.tag = strenv(TAG) | .okdpGitopsImage.digest = strenv(DIGEST)' \
       "$BOOTSTRAP_COPY/forgejo-runner/values.yaml"
@@ -221,7 +276,7 @@ push_copy() {
 }
 
 if [[ "$ACTION" == push ]]; then
-  prepare_copy; push_copy; exit 0
+  registry_prepare; prepare_copy; push_copy; exit 0
 fi
 
 # ------------------------------------------------------------------ cluster
@@ -253,6 +308,7 @@ for image in $E2E_LOAD_IMAGES; do
   kind load docker-image "$image" --name "$CLUSTER"
 done
 
+registry_prepare
 prepare_copy
 
 # ------------------------------------------------- the platform's dependencies

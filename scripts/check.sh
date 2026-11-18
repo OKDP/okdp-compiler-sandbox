@@ -27,8 +27,8 @@
 #      sandbox's io or split topology (gitops.topology; no single repository, mono is
 #      gone; io warned of: every writer of the projects repository writes every
 #      project); flux/ and argocd/ read the output repository of the topology (the
-#      AppProjects too; the app of apps of the instances writes Applications in
-#      argocd only, its AppProject okdp.instances; Argo CD's admins are the
+#      AppProjects too; one parent per project applies the instances, Applications in
+#      argocd only, of the AppProject okdp.instances; Argo CD's admins are the
 #      administrators' groups of platform.yaml, no default role); the OIDC
 #      provider's certificate is checked (platform.yaml oidc.insecureSkipVerify,
 #      Argo CD's oidc.tls.insecure.skip.verify, the console's keycloak.tlsInsecure
@@ -61,11 +61,11 @@
 #   6. the kustomizations of that output build (when kustomize is installed): the
 #      root's, compiled/projects, which Flux syncs, each project's, its manifests'
 #      (project/), each instance's;
-#   7. with --helm: every compiled instance renders with `helm template` (its umbrella
-#      chart, its dependencies fetched from their repositories by helm dependency
-#      build, with its instance.values.yaml): the charts' templates, which the
-#      compile's chart cache does not hold (Chart.yaml, values.yaml,
-#      values.schema.json only).
+#   7. with --helm: every compiled instance renders with `helm template`, as the
+#      engines deploy it (its umbrella chart with its instance.values.yaml): the
+#      charts the compile vendored (charts/*.tgz, with --charts) as they are, a
+#      dependency not vendored fetched from its repository by helm dependency
+#      build.
 # The catalogs are those of catalogs.yaml, read as scripts/compile.sh reads them
 # (--catalog NAME=SRC, OKDP_CATALOGS; default: the checkouts next to this repository
 # at the catalog's ref, else GitHub).
@@ -167,17 +167,22 @@ fi
   || fail "flux/sync.yaml: the path starts with $(entry_prefix), the output is at the root of its repository (./compiled/projects)"
 [[ "$(yq 'select(.kind == "Application") | .spec.source.repoURL' "$ROOT/argocd/root.yaml")" == "$(output_url "$topology")" ]] \
   || fail "argocd/root.yaml: its source is not the output repository (okdp-gitops writes the Applications of the instances from it)"
-# The AppProjects of the entry point read the output repository only; the app of
-# apps of the instances writes Applications in argocd and nothing else.
+# The AppProjects of the entry point read the output repository only; the parent of
+# each project's instances writes Applications in argocd and nothing else, one
+# Application per project (one for the tree would let a project's Degraded
+# Application stop every other's sync waves).
 for f in "$ROOT"/argocd/*.yaml; do
   [[ "$(U="$(output_url "$topology")" yq 'select(.kind == "AppProject") | .spec.sourceRepos[] | select(. != strenv(U))' "$f")" == "" ]] \
     || fail "argocd/${f##*/}: an AppProject reads another repository than the output repository"
 done
-[[ "$(yq -o=json -I=0 'select(.kind == "Application" and .metadata.name == "okdp.instances") | .spec.project' "$ROOT/argocd/instances.yaml")" == '"okdp.instances"' \
+[[ "$(yq 'select(.kind == "ApplicationSet" and .metadata.name == "okdp.instances")' "$ROOT/argocd/instances.yaml" \
+    | yq -o=json -I=0 '[.spec.generators[0].git.directories[0].path, .spec.template.spec.project, .spec.template.spec.source.path, .spec.template.spec.source.directory.include]')" \
+    == '["compiled/projects/*","okdp.instances","compiled/projects/{{ .path.basename }}","instances/*/application.yaml"]' \
+  && "$(yq 'select(.kind == "Application") | .metadata.name' "$ROOT/argocd/instances.yaml")" == "" \
   && "$(yq 'select(.kind == "AppProject" and .metadata.name == "okdp.instances")' "$ROOT/argocd/instances.yaml" \
     | yq -o=json -I=0 '[.spec.destinations, (.spec.clusterResourceWhitelist // []), .spec.namespaceResourceWhitelist]')" \
     == '[[{"server":"https://kubernetes.default.svc","namespace":"argocd"}],[],[{"group":"argoproj.io","kind":"Application"}]]' ]] \
-  || fail "argocd/instances.yaml: the Application okdp.instances is not of the AppProject okdp.instances, or that AppProject allows more than Applications in argocd"
+  || fail "argocd/instances.yaml: the ApplicationSet okdp.instances does not make one parent per project of compiled/projects/* of the AppProject okdp.instances, an Application for the whole tree remains, or that AppProject allows more than Applications in argocd"
 # Argo CD's roles: the platform's administrators (global.okdp.access.admins) admins,
 # no default role for the others (the projects' AppProject roles alone).
 rbac="$ROOT/argocd/bootstrap/argocd-rbac-cm-patch.yaml"
@@ -265,7 +270,7 @@ fi
 # DCR_NAMESPACES (lib/common.sh, scripts/bootstrap.sh); a namespace whose secrets
 # instance (the service local-secrets-provider of the project) has no entry
 # okdp-dcr-token reading <namespace>/keycloak/dcr-token gets no Secret
-# okdp-dcr-token: every oidc-dcr Job of the namespace fails.
+# okdp-dcr-token: every registration Job of the namespace (<release>-oidc-dcr) fails.
 if [[ -f "$ROOT/platform.yaml" && "$(yq '.global.okdp.oidc.clientProvisioning // ""' "$ROOT/platform.yaml")" == dcr \
   && "$(yq '.global.okdp.oidc.dcr.authMethod // ""' "$ROOT/platform.yaml")" == initialAccessToken ]]; then
   for ns in $DCR_NAMESPACES; do
@@ -307,6 +312,26 @@ else
     done < <(yq -r '.connections // {} | to_entries[] | .value.secretRef.remoteKey // ""' "$f" | grep -v '^$' || true)
   done < <(find "$ROOT/platform.yaml" "$ROOT/projects" "$ROOT/optional" \
     \( -name platform.yaml -o -name project.yaml -o -name connections.yaml \) -type f 2>/dev/null | sort)
+  # The platform's own namespaces are one list: okdp.io/platform of the bootstrap's
+  # namespaces.yaml, which leaves them out of the admission policies on hosts and
+  # gives them any certificate. Every privileged project is labelled "true" there, and
+  # no confined project (a project of projects/ or optional/projects/) is.
+  namespaces="${CATALOG_DIRS[$BOOTSTRAP_CATALOG]}/bootstrap/namespaces.yaml"
+  if [[ ! -f "$namespaces" ]]; then
+    fail "catalog $BOOTSTRAP_CATALOG: no bootstrap/namespaces.yaml"
+  elif [[ -f "$ROOT/platform.yaml" ]]; then
+    privileged="$(yq -r '.global.okdp.policy.privileged[]?' "$ROOT/platform.yaml")"
+    labelled="$(yq ea -N -r 'select(.kind == "Namespace" and .metadata.labels["okdp.io/platform"] == "true") | .metadata.name' "$namespaces")"
+    for p in $privileged; do
+      grep -qxF "$p" <<<"$labelled" \
+        || fail "platform.yaml: global.okdp.policy.privileged: $p is not labelled okdp.io/platform: \"true\" in bootstrap/namespaces.yaml of $BOOTSTRAP_CATALOG: the admission policies would bind it"
+    done
+    for n in $labelled; do
+      if [[ -f "$ROOT/projects/$n/project.yaml" || -f "$ROOT/optional/projects/$n/project.yaml" ]] && ! grep -qxF "$n" <<<"$privileged"; then
+        fail "bootstrap/namespaces.yaml of $BOOTSTRAP_CATALOG: $n is labelled okdp.io/platform but is a confined project (not in global.okdp.policy.privileged of platform.yaml)"
+      fi
+    done
+  fi
 fi
 
 # ------------------------------------------------------------- 4. compile
@@ -396,24 +421,31 @@ elif $HELM; then
       fail "helm template $rel: no compiled umbrella chart (compiled/projects/$p/instances/$r/Chart.yaml)"
       continue
     fi
-    # The umbrella, its dependencies fetched from their repositories.
+    # The umbrella as the engines deploy it: the vendored charts (charts/*.tgz, the
+    # bytes the compile checked) rendered as they are. A dependency not vendored (no
+    # chart cache, an archive over the compile's limit) is fetched: helm dependency
+    # build fetches them all, the vendored archives are put back over its copies.
     chart="$TMP/umbrella/$r"
-    rm -rf "$chart"; mkdir -p "$chart"; cp -R "$out/." "$chart"; rm -rf "$chart/charts" "$chart/Chart.lock"
-    # The objects' chart is in the sandbox's registry, okdp-registry:5000 from
-    # the cluster, 127.0.0.1:5001 from here, plain HTTP: pulled, then named by
-    # its directory, the other OCI dependencies staying on TLS.
-    objects="$(yq '.dependencies[] | select(.name == "okdp-objects") | .version' "$chart/Chart.yaml")"
-    if [[ -n "$objects" ]]; then
-      if [[ ! -d "$TMP/okdp-objects-$objects" ]]; then
-        helm pull "${OKDP_OBJECTS_REPOSITORY:-oci://127.0.0.1:5001/okdp/charts}/okdp-objects" --version "$objects" \
-          --plain-http --untar -d "$TMP/okdp-objects-$objects" >"$TMP/.helm.log" 2>&1 \
-          || { fail "helm pull okdp-objects $objects $rel"; grep -v 'failed to load plugins' "$TMP/.helm.log" | sed 's/^/   /'; continue; }
+    rm -rf "$chart"; mkdir -p "$chart"; cp -R "$out/." "$chart"; rm -f "$chart/Chart.lock"
+    missing=false
+    while IFS=$'\t' read -r dep ver; do
+      [[ -f "$chart/charts/$dep-$ver.tgz" ]] || missing=true
+    done < <(yq -r '.dependencies[]? | .name + "\t" + .version' "$chart/Chart.yaml")
+    if $missing; then
+      # The objects' chart is in the sandbox's registry, reached over OCI as the engines
+      # reach it: okdp-registry:5000 from the cluster, 127.0.0.1:5001 from here, only
+      # the address rewritten, plain HTTP left to helm dependency build (Helm 3 falls
+      # back to it; a Helm 4 needs --plain-http, which would apply to every OCI
+      # dependency of the umbrella). The registry must be up with the chart pushed
+      # (README, step 2): a failed pull fails here, as it fails in the engines.
+      if [[ -n "$(yq '.dependencies[] | select(.name == "okdp-objects") | .version' "$chart/Chart.yaml")" ]]; then
+        OKDP_OBJECTS_URL="${OKDP_OBJECTS_REPOSITORY:-oci://127.0.0.1:5001/okdp/charts}" \
+          yq -i '(.dependencies[] | select(.name == "okdp-objects") | .repository) = strenv(OKDP_OBJECTS_URL)' "$chart/Chart.yaml"
       fi
-      DIR="file://$TMP/okdp-objects-$objects/okdp-objects" \
-        yq -i '(.dependencies[] | select(.name == "okdp-objects") | .repository) = strenv(DIR)' "$chart/Chart.yaml"
+      helm dependency build "$chart" >"$TMP/.helm.log" 2>&1 \
+        || { fail "helm dependency build $rel"; grep -v 'failed to load plugins' "$TMP/.helm.log" | sed 's/^/   /'; continue; }
+      [[ ! -d "$out/charts" ]] || cp "$out/charts/"*.tgz "$chart/charts/"
     fi
-    helm dependency build "$chart" >"$TMP/.helm.log" 2>&1 \
-      || { fail "helm dependency build $rel"; grep -v 'failed to load plugins' "$TMP/.helm.log" | sed 's/^/   /'; continue; }
     if helm template "$r" "$chart" -n "$p" -f "$out/instance.values.yaml" >"$TMP/.helm.out" 2>"$TMP/.helm.log"; then
       echo "   ok $rel ($(grep -c '^kind:' "$TMP/.helm.out") objects)"
     else

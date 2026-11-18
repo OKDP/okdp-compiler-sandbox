@@ -66,8 +66,9 @@ argocd/                           # Argo CD entry point (reads the output reposi
   project.yaml                    #   AppProject okdp (the platform's objects, the output only)
   root.yaml                       #   Application okdp (manages argocd/ itself); okdp-gitops reads
                                   #   its source, the repository of the Applications it writes
-  instances.yaml                  #   Application okdp.instances: the instances' Applications,
-                                  #   its AppProject okdp.instances (Applications in argocd only)
+  instances.yaml                  #   ApplicationSet okdp.instances: one parent okdp.instances.<p>
+                                  #   per project applies its instances' Applications, their
+                                  #   AppProject okdp.instances (Applications in argocd only)
   projects.yaml                   #   ApplicationSet okdp.projects: the projects' manifests,
                                   #   compiled/projects/<p>/project/ (an AppProject per project)
   ingress.yaml                    #   Argo CD's UI at https://argocd.okdp.sandbox
@@ -105,7 +106,11 @@ The platform's own projects are listed in `global.okdp.policy.privileged` of
 [`platform.yaml`](platform.yaml): `spark-operator`, `okdp-system`, and the optional
 operators, once moved into place, whose instances install cluster-scoped objects (CRDs, cluster roles,
 webhooks), write other namespaces or run privileged pods, with the engine's own
-identity, in namespaces that admit privileged pods. Every other project, the
+identity, in namespaces that admit privileged pods. Each is also labelled
+`okdp.io/platform: "true"` in sandbox-charts'
+[`bootstrap/namespaces.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/namespaces.yaml),
+which leaves it out of the admission policies on hosts and gives it certificates of
+any name (`scripts/check.sh` fails when the two lists differ). Every other project, the
 platform's `cnpg-system`, `s3-system` and `default` among them, is confined to its
 namespace by okdp-compiler: its objects in its namespace only, no cluster-scoped
 kind, its releases installed under an AppProject of its namespace (Argo CD) or with
@@ -589,8 +594,8 @@ upstream chart's `values.schema.json` by the control plane server before it comm
 (its chart cache, `gitops.chartCacheDir`), and by the compile given a chart cache
 (`okdp-gitops compile --charts DIR`, `scripts/check.sh --charts DIR`, the sandbox's
 CI), which pulls the upstream charts there itself; `scripts/check.sh --helm` also
-renders every compiled instance with Helm (its dependencies fetched by `helm
-dependency build`).
+renders every compiled instance with Helm (the charts the compile vendored as they
+are, a dependency not vendored fetched by `helm dependency build`).
 
 ## Generated files
 
@@ -602,6 +607,7 @@ okdp-compiler's targets, each marked generated on its first line
 |---|---|
 | `compiled/projects/<p>/instances/<r>/Chart.yaml`, `instance.values.yaml` | the umbrella chart (the package's `Chart.yaml`, its dependencies the upstream charts it renders, the OAuth client charts in `dcr` mode) and its values |
 | `okdp-objects` in `.../instance.values.yaml` | the instance's objects (its package's, the ExternalSecrets of its claims and of the connections in the secret store, a provider's PushSecrets), rendered as written by the `okdp-objects` chart |
+| `.../charts/<chart>-<version>.tgz` | with a chart cache (`okdp-gitops compile --charts`): each chart the compile checked, byte for byte, its digest in `Chart.yaml` (`okdp.io/chart-digests`), what the engines deploy; an archive not fetched or over 4 MiB stays fetched by the engine by tag |
 | `.../okdp.info.yaml` | what the instance publishes: its URL, usage and the connections it provides (what the console shows of the instance and offers to the others) |
 | `.../application.yaml` | Argo CD: Application `argocd/<r>` (release `<r>`, namespace `<p>`, AppProject `project-<p>`), its source the instance's directory of the repository of `argocd/root.yaml` with `instance.values.yaml`, its sync wave after the instances it waits for; written when the output has `argocd/root.yaml` |
 | `.../helmrelease.yaml` | Flux: HelmRelease `okdp-releases/<r>` (release `<r>`, namespace `<p>`), its chart built from GitRepository `okdp-gitops` at the instance's directory, its values from the ConfigMap `values-<r>` alone, `dependsOn` the instances it waits for |
@@ -673,20 +679,28 @@ kubectl -n argocd rollout restart deployment argocd-server
    instances because the output has `argocd/root.yaml`, with its source's repository
    and revision.
 2. `kubectl apply -n argocd -f gitops/argocd/`, from this repository: Application
-   `okdp` then reads `argocd/` from the output repository.
+   `okdp` then reads `argocd/` from the output repository. The directory also holds
+   the repository Secret `okdp-objects-registry` of the plain-HTTP registry of the
+   `okdp-objects` chart (Argo CD 3.4's Helm falls back to plain HTTP by itself; 3.5
+   needs the Secret); the output's `argocd/` carries it too.
 
 The entry points' own objects in the engines' namespaces take names no release,
-`<p>-<i>` (a DNS label, with a dash), can: `okdp`, `okdp.instances`, `okdp.projects`
-and `okdp.project.<p>` in `argocd`, `okdp` and `okdp-gitops` (the source the compiled
+`<p>-<i>` (a DNS label, with a dash), can: `okdp`, `okdp.instances`, `okdp.instances.<p>`,
+`okdp.projects` and `okdp.project.<p>` in `argocd`, `okdp` and `okdp-gitops` (the source the compiled
 HelmReleases name) in `flux-system`, where no project's object can be (the compile
 refuses a project of `argocd`, `flux-system` or `okdp-releases`). An Application
-`okdp-instances` would be the release of an instance `instances` of a project
-`okdp`, which would replace the app of apps and prune every Application it applies.
+`okdp-instances-<p>` would be the release of an instance `instances-<p>` of a project
+`okdp`, which would replace a project's parent and prune every Application it applies.
 
 Argo CD then manages `argocd/` itself (Application `okdp`), and one Application `<r>`
 per compiled instance: the `application.yaml` the compile writes in its directory,
-applied by the app of apps `okdp.instances` from the output repository
-(`compiled/projects`, `*/instances/*/application.yaml`). The app of apps is of its own
+applied by the parent of its project, `okdp.instances.<p>` (ApplicationSet
+`okdp.instances`, one per `compiled/projects/<p>/` directory,
+`instances/*/application.yaml` of it, from the output repository). One parent per
+project and not one for the tree: a sync wave waits for the previous wave of its own
+parent only, so one project's Degraded Application stops its own later waves and no
+other project's. Across projects (a provider and those that claim from it), the
+order is the retries of the Applications waiting. The parents are of their own
 AppProject, `okdp.instances`, which writes `argoproj.io/Application` objects in
 `argocd` and nothing else (no other kind, no other namespace, nothing
 cluster-scoped); the AppProject `okdp`, every namespace and kind, is the platform's
@@ -742,8 +756,10 @@ kubectl -n flux-system patch deployment helm-controller --type json \
    sets it; for another Git server, as for Argo CD). Commit, push
    (`scripts/configure.sh --push`).
 2. `kubectl apply -f gitops/flux/sync.yaml`, from this repository: the GitRepository
-   `okdp-gitops`, the namespace `okdp-releases` and the Kustomization `okdp` of
-   `./compiled/projects`, the whole compiled tree.
+   `okdp-gitops`, the namespace `okdp-releases`, the Kustomization `okdp` of
+   `./compiled/projects`, the whole compiled tree, and the HelmRepository
+   `okdp-objects` (`insecure: true`), through which source-controller resolves the
+   `okdp-objects` dependency of the umbrellas on the plain-HTTP registry.
 
 Flux then syncs `compiled/projects/kustomization.yaml`, as kustomize-controller's own
 ServiceAccount (`serviceAccountName: kustomize-controller` of the Kustomization `okdp`:
@@ -854,8 +870,9 @@ scripts/lib/                      # shared by the scripts (topology, catalogs, F
   DIR`, which pulls the upstream charts there and checks the values against them),
   the optional projects too, moved into `projects/` (a copy of the layout), and
   `kustomize build` of every kustomization of that output; `--helm` also runs `helm
-  template` of every compiled instance (its umbrella, its dependencies fetched by
-  `helm dependency build`). Needs yq v4, git and okdp-gitops; kustomize and helm
+  template` of every compiled instance (its umbrella, the charts the compile vendored
+  as they are, a dependency not vendored fetched by `helm dependency build`). Needs
+  yq v4, git and okdp-gitops; kustomize and helm
   optional.
 - `scripts/e2e-kind.sh up|push|down argocd|flux`: installs the sandbox on a throwaway
   kind cluster: the platform's dependencies (`bootstrap.sh`), then the layout through

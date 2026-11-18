@@ -139,7 +139,7 @@ The platform's dependencies ([`bootstrap/`](https://github.com/OKDP/sandbox-char
 | ingress-nginx, on the node ports kind maps to the host | `ingress-nginx` | `global.okdp.ingress`: the class `nginx` of every ingress |
 | The cluster's CoreDNS answering `*.okdp.sandbox` with the ingress controller ([`patch.sh`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/coredns/patch.sh)), the host's DNS server (node port 30053) | `coredns` | the services reach each other, Keycloak first, by their public names |
 | Reloader, the deletion protection and the admission bounds ([`policies.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/protection/policies.yaml), [`ingress-hosts.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/protection/ingress-hosts.yaml)) | `reloader` | workloads restarted when their Secrets change, `okdp.io/protected` objects and the operators' CRDs not deleted, a project's Ingress and Certificate hosts bound to its namespace |
-| approver-policy and its [policies](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/approver-policy/policies.yaml) | `approver-policy` | the only approver of the certificate requests: `default-issuer` signs a project's own hosts (`-<namespace>.okdp.sandbox`) and the platform's namespaces' names |
+| approver-policy and its [policies](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/approver-policy/policies.yaml) | `approver-policy` | the only approver of the certificate requests: `default-issuer` signs a project's own hosts (`<label>.<namespace>.okdp.sandbox`) and the platform's namespaces' names |
 | CloudNativePG, the PostgreSQL operator | `cloudnative-pg` | the platform's database server (`cnpg-system/cnpg-postgresql`) runs on it |
 | External Secrets | `external-secrets` | the SecretStore the compiler writes in each project's namespace, over the secret store |
 | OpenBao, the platform's secret store, over https (a certificate of `default-issuer`): its KV mount `okdp`, the Kubernetes auth (the role `okdp`, of the audience `openbao`) and the policy of the namespaces, the keys of the bootstrap | `openbao` | `global.okdp.secrets`: what crosses namespaces (the demo's S3 identity, the secrets of Keycloak's clients, the claims' credentials), each namespace its own keys; each namespace's SecretStore checks OpenBao's certificate against `certs-bundle` and signs in with a token of the audience `openbao` |
@@ -310,26 +310,28 @@ server = "http://repo.alliage.io:8082"
 The CI's jobs run in containers of the okdp-gitops image, which the runner's own Docker
 daemon pulls (docker-in-docker): an image loaded into the node (`kind load`) is not seen
 there, it comes from a registry. No okdp-gitops image is published yet
-(TODO(okdp-gitops)): build it from checkouts of
-[okdp-gitops](https://github.com/OKDP/okdp-gitops) and
-[okdp-compiler](https://github.com/OKDP/okdp-compiler) next to this repository, and serve
+(TODO(okdp-gitops)): build it from a checkout of
+[okdp-gitops](https://github.com/OKDP/okdp-gitops) next to this repository, and serve
 it from a registry of your own on the kind network, `okdp-registry:5000` from the
 cluster (plain HTTP), `127.0.0.1:5001` from your machine; the node's containerd pulls
 from it too (the control plane images may be pushed there instead of `kind load`).
 The registry has no authentication and sits on the kind network, which the pods of
 the tenants' projects reach (their egress is open): the CI's image receives the
 output repository's write token, so it is named by its **digest**, and the registry
-is made read-only once the image is pushed (two steps: push into a writable
-registry, then recreate it read-only on the same volume), so that nothing a pod
-pushes later is ever pulled as the CI's image:
+is made read-only once the image and the chart below are pushed (two steps: push
+into a writable registry, then recreate it read-only on the same volume), so that
+nothing a pod pushes later is ever pulled as the CI's image or the instances' chart:
 
 ```sh
 docker run -d --restart=always --name okdp-registry --network kind -p 127.0.0.1:5001:5000 \
   -v okdp-registry-data:/var/lib/registry registry:2
-docker build --build-context okdp-compiler=../okdp-compiler -t 127.0.0.1:5001/okdp-gitops:dev ../okdp-gitops
+docker build -t 127.0.0.1:5001/okdp-gitops:dev ../okdp-gitops
 docker push 127.0.0.1:5001/okdp-gitops:dev
 # the digest of the pushed image (sha256:...), set in the runner's values below
 docker inspect --format '{{index .RepoDigests 0}}' 127.0.0.1:5001/okdp-gitops:dev | cut -d@ -f2
+# the chart of the instances' objects, from a checkout of okdp-objects-chart next to
+# this repository
+make -C ../okdp-objects-chart push-local
 # the same registry, read-only, on the same volume
 docker rm -f okdp-registry
 docker run -d --restart=always --name okdp-registry --network kind -p 127.0.0.1:5001:5000 \
@@ -344,10 +346,21 @@ EOF
 ```
 
 The chart of the instances' objects comes from this registry too, until it is
-published (`global.okdp.charts.objects` in `gitops/platform.yaml`). Push it while the
-registry is writable, from a checkout of `okdp-objects-chart` next to this repository:
-`make -C ../okdp-objects-chart push-local`. `scripts/check.sh --helm` reads it at
-`127.0.0.1:5001` (`OKDP_OBJECTS_REPOSITORY` names another).
+published (`global.okdp.charts.objects` in `gitops/platform.yaml`). It is named by
+its version, a tag: `global.okdp.charts.objects` takes a repository, a chart and a
+version, and the umbrella's `Chart.yaml` no digest, so the read-only registry above
+is the only thing that keeps a pod from replacing it. Argo CD and Flux pull it over
+plain HTTP, the dependency of every compiled umbrella: Flux through the
+`HelmRepository` `okdp-objects` of `gitops/flux/sync.yaml` (`insecure: true`), Argo CD's
+Helm 3 by falling back to plain HTTP itself (`gitops/argocd/okdp-objects-registry.yaml`
+is what Argo CD 3.5 will need). The CI's job names it as a private chart host reached
+over plain HTTP (`CI_PRIVATE_CHART_HOSTS`, `CI_INSECURE_CHART_HOSTS`:
+`GITOPS_PRIVATE_CHART_HOSTS`, `GITOPS_INSECURE_CHART_HOSTS` of its job, refused by
+default for any other host), so the compile pulls and vendors it with the other
+charts. `scripts/check.sh --helm` renders the vendored charts; a dependency not
+vendored (the compile had no chart cache, `--charts`) it reads from the same registry
+over OCI at `127.0.0.1:5001` (`OKDP_OBJECTS_REPOSITORY` names another), which then
+needs the registry up with the chart pushed.
 
 The CI runner's values, sandbox-charts'
 [`bootstrap/forgejo-runner/values.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/forgejo-runner/values.yaml),
@@ -417,7 +430,9 @@ repository are your own input, read as they are. It applies the namespaces first
 with their Pod Security levels (`bootstrap/namespaces.yaml`: `baseline` enforced,
 `restricted` warned and audited, `forgejo` alone `privileged` for the CI runner's
 Docker daemon; `argocd` and `flux-system`, the engines' namespaces, are labelled the
-same), which the releases' `--create-namespace` find, then the default deny of the
+same; the label `okdp.io/platform` marks the platform's own namespaces, those of
+`global.okdp.policy.privileged` among them, for the admission policies and
+approver-policy), which the releases' `--create-namespace` find, then the default deny of the
 ingress of the namespaces whose release brings no NetworkPolicy
 (`bootstrap/network-policies.yaml`: the webhooks' ports stay open). It installs each chart by its
 content, which sandbox-charts' `bootstrap/charts.yaml` pins (the sha256 of the package
@@ -670,7 +685,7 @@ OpenBao, where sandbox-charts' `bootstrap/openbao/init.sh` mints one per namespa
 token per namespace, valid 30 days by default, minted again by the next run only
 when it is gone, used up or about to end) and writes it to Secret
 `<release>-<namespace>-dcr`. The realm refuses anonymous registration (Keycloak's own
-client registration policies, [`realm.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/keycloak/realm.yaml) declares none). The Job runs `quay.io/adaltas/oidc-dcr-job`.
+client registration policies, [`realm.yaml`](https://github.com/OKDP/sandbox-charts/blob/main/bootstrap/keycloak/realm.yaml) declares none). Each Job runs `quay.io/adaltas/oidc-dcr-job`, by digest (`global.okdp.oidc.dcr.image`, a `tag` given only with its `digest`).
 The console's own client (`okdp-ui`) stays declared in the Keycloak realm. The alternative is
 `clientProvisioning: existing` (drop the `dcr` block): the services then use the clients declared in
 the realm and their Secrets `creds-<release>-oauth2` (`projects/demo/instances/secrets`), whose

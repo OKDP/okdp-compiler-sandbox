@@ -103,6 +103,8 @@ Add the following entries to your `/etc/hosts` file for each service that will b
 127.0.0.1 keycloak.okdp.sandbox kad.okdp.sandbox okdp-server.okdp.sandbox okdp-ui.okdp.sandbox 
 ```
 
+A project's services have two labels below the suffix (`<label>.<namespace>.okdp.sandbox`, e.g. `trino.demo.okdp.sandbox`): the resolvers above answer them all, `/etc/hosts` needs each one written out.
+
 **Important**: Always use a single line for all hostnames pointing to 127.0.0.1. Having multiple lines with the same IP address (127.0.0.1) can cause DNS resolution problems.
 
 **Note**: You will need to manually add DNS entries for each additional service deployed through the frontend.

@@ -25,8 +25,8 @@
 # for it). The bootstrap (the platform's prerequisites) is sandbox-charts'
 # bootstrap/, checked there.
 #
-# okdp-gitops is built from its repository, with okdp-compiler next to it (its go.mod
-# replaces it). The service catalogs of gitops/catalogs.yaml
+# okdp-gitops is built from its repository (okdp-compiler and cel2yaml are the
+# releases its go.mod requires). The service catalogs of gitops/catalogs.yaml
 # (platform-charts, sandbox-charts, community-charts) are fetched next to this
 # repository at the commit the catalog pins, where scripts/check.sh reads them. The
 # compile pulls the upstream charts of the compiled umbrellas into its chart cache
@@ -61,11 +61,10 @@ env:
   # sha256 of kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz, from the
   # release's checksums.txt. Update both together.
   KUSTOMIZE_SHA256: 029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d
-  # The commits the layout is checked with, fetched by SHA (a branch moves under
-  # the check), the same as deploy-validation.yml's. TODO(okdp-compiler):
-  # releases, once the feat/claim-provisioner branches land.
-  OKDP_GITOPS_REF: ed6b455cff9eb7bc00067316fb5fe178c1625734
-  OKDP_COMPILER_REF: a6f9dd96079f97fd3b972c2872e486f922fc84d5
+  # The commit of okdp-gitops the layout is checked with, fetched by SHA (a
+  # branch moves under the check), the same as deploy-validation.yml's.
+  # TODO(okdp-gitops): its release, once the feat/claim-provisioner branches land.
+  OKDP_GITOPS_REF: 852cd797174cd8572b7f644bf238c8c660abab1f
 
 jobs:
   check:
@@ -76,7 +75,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Clone okdp-gitops, okdp-compiler and the service catalogs 📥
+      - name: Clone okdp-gitops and the service catalogs 📥
         run: |
           set -euo pipefail
           fetch() { # <repository> <commit>: ../<repository> at that commit
@@ -86,7 +85,6 @@ jobs:
             git -C "../$1" checkout -q FETCH_HEAD
           }
           fetch okdp-gitops "${OKDP_GITOPS_REF}"
-          fetch okdp-compiler "${OKDP_COMPILER_REF}"
           # The catalogs, at the commit gitops/catalogs.yaml pins (yq is
           # preinstalled; scripts/check.sh warns of a branch, fetched all the same).
           yq -r '.repositories[] | [.name, .ref] | @tsv' gitops/catalogs.yaml \

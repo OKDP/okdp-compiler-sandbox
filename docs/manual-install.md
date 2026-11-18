@@ -285,8 +285,10 @@ commands of sandbox-charts'
 [step 3](../README.md#3-install-the-platforms-dependencies) runs), but Forgejo's and its
 runner's, from the catalog sandbox-charts fetched at step 4, at its `ref`. Each `helm`
 waits for its release (and its hooks: Keycloak's realm, RustFS' buckets and identity).
-The namespaces come first, with their Pod Security levels (`namespaces.yaml`:
-`baseline` enforced, `restricted` warned and audited), and the default deny of the
+The namespaces come first, with their Pod Security levels and the label
+`okdp.io/platform` of the platform's own (`namespaces.yaml`: `baseline` enforced,
+`restricted` warned and audited; applied server-side, so that the engines keep
+that label), and the default deny of the
 ingress of the namespaces whose release brings no NetworkPolicy
 (`network-policies.yaml`), which the releases' `--create-namespace` find.
 
@@ -314,7 +316,7 @@ install_chart() {
   helm upgrade --install "$rel" "$pkg" -n "$(yq "$r.namespace" bootstrap/charts.yaml)" \
     --create-namespace --wait "$@"
 }
-kubectl apply -f bootstrap/namespaces.yaml
+kubectl apply --server-side --field-manager=okdp-bootstrap -f bootstrap/namespaces.yaml
 kubectl apply -f bootstrap/network-policies.yaml
 install_chart cert-manager -f bootstrap/cert-manager/values.yaml
 install_chart approver-policy -f bootstrap/approver-policy/values.yaml
@@ -453,7 +455,9 @@ install demo/secrets
 ```
 
 Then the services. Those with a sign-in register their OAuth client in Keycloak before
-they start (the oidc-dcr Job, a Helm pre-install hook).
+they start (a registration Job per client, `<release>-oidc-dcr`, a pre-install and
+pre-upgrade hook of the instance's `okdp-objects` chart; a `-delete` Job removes it at
+uninstall).
 
 ```sh
 install demo/hive
@@ -500,12 +504,12 @@ of the realm `okdp`, [`bootstrap/keycloak/realm.yaml`](https://github.com/OKDP/s
 |---|---|
 | Keycloak | https://keycloak.okdp.sandbox |
 | S3 store console (user `okdp-root`, Secret `rustfs/rustfs-root`) | https://s3-console.okdp.sandbox |
-| Trino | https://trino-demo.okdp.sandbox |
-| Superset | https://superset-demo.okdp.sandbox |
-| Airflow | https://airflow-demo.okdp.sandbox |
-| JupyterHub | https://jupyterhub-demo.okdp.sandbox |
-| Polaris console | https://polaris-console-demo.okdp.sandbox |
-| Spark History Server | https://spark-web-proxy-demo.okdp.sandbox |
+| Trino | https://trino.demo.okdp.sandbox |
+| Superset | https://superset.demo.okdp.sandbox |
+| Airflow | https://airflow.demo.okdp.sandbox |
+| JupyterHub | https://jupyterhub.demo.okdp.sandbox |
+| Polaris console | https://polaris-console.demo.okdp.sandbox |
+| Spark History Server | https://spark-history.demo.okdp.sandbox |
 
 Each compiled instance that publishes something lists its URL and usage in its
 `okdp.info.yaml`:

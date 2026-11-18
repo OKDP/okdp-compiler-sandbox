@@ -24,9 +24,11 @@
 # checkout next to this repository, else GitHub; its README lists the commands:
 #   0. the namespaces of the releases, each with its Pod Security level
 #      (bootstrap/namespaces.yaml: baseline enforced, restricted warned and
-#      audited; forgejo privileged, the CI runner's Docker daemon), applied first so
-#      that no release creates its namespace unlabelled (--create-namespace finds
-#      them);
+#      audited; forgejo privileged, the CI runner's Docker daemon; the label
+#      okdp.io/platform of the platform's own namespaces), applied first so that no
+#      release creates its namespace unlabelled (--create-namespace finds them),
+#      server-side under a field manager of its own so that the engines, which apply
+#      the compiled Namespace of the platform's own projects, keep that label;
 #   1. cert-manager (its own approver off), approver-policy and its policies
 #      (bootstrap/approver-policy/policies.yaml: default-issuer signs a project's own
 #      hosts only), trust-manager and the cluster issuer default-issuer, a CA minted
@@ -199,7 +201,7 @@ echo "Installing the platform's dependencies into the context $(kubectl config c
 step "The namespaces and their Pod Security levels"
 [[ -f "$DIR/namespaces.yaml" ]] \
   || { echo "bootstrap: $DIR has no namespaces.yaml (the namespaces' Pod Security levels): a bootstrap of sandbox-charts older than this script" >&2; exit 1; }
-kubectl apply -f "$DIR/namespaces.yaml"
+kubectl apply --server-side --field-manager=okdp-bootstrap -f "$DIR/namespaces.yaml"
 # The default deny of the ingress of the namespaces no release brings one for, and the
 # ports of their webhooks.
 [[ -f "$DIR/network-policies.yaml" ]] \

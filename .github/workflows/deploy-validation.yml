@@ -37,10 +37,11 @@
 # schedule, must compile a plain commit of the sources, and the output's main refuse
 # the admin's push. The service catalogs of gitops/catalogs.yaml are fetched
 # next to this repository at the commit they pin (its full history: Forgejo refuses
-# a shallow push); nothing OKDP comes from a registry but the control plane images.
-# The control plane server is built from okdp-control-plane-server (with okdp-gitops,
-# whose compile checks what it writes) and loaded into kind; okdp-gitops is built from
-# its repository.
+# a shallow push); nothing OKDP comes from a registry but the control plane images and
+# the chart okdp-objects. The control plane server is built from
+# okdp-control-plane-server (with okdp-gitops, whose compile checks what it writes),
+# okdp-gitops from its repository; e2e-kind.sh pushes both, and the chart built from
+# okdp-objects-chart, to the sandbox's registry (README step 2) and names them by digest.
 
 name: Deploy validation (sandbox e2e, Argo CD and Flux)
 
@@ -89,14 +90,15 @@ env:
   # kind-linux-amd64.sha256sum. Update both together.
   KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
   # The commits the sandbox is tested with, fetched by SHA (a branch moves under
-  # the test). TODO(okdp-compiler): releases, once the feat/claim-provisioner
-  # branches land. Bump the three together.
-  OKDP_CONTROL_PLANE_SERVER_REF: 06c90c0b46bba0d032c2f1f704fc6fb538d8fc30
-  OKDP_GITOPS_REF: ed6b455cff9eb7bc00067316fb5fe178c1625734
-  OKDP_COMPILER_REF: a6f9dd96079f97fd3b972c2872e486f922fc84d5
+  # the test); okdp-compiler and cel2yaml are the releases their go.mod require.
+  # TODO(okdp-gitops): releases, once the feat/claim-provisioner branches land.
+  # Bump the two together.
+  OKDP_CONTROL_PLANE_SERVER_REF: c8847a4239cad57eec61881ab01668ed1bb68774
+  OKDP_GITOPS_REF: 852cd797174cd8572b7f644bf238c8c660abab1f
+  # The chart of the instances' objects, pushed to the sandbox's registry (e2e-kind.sh).
+  OKDP_OBJECTS_CHART_REF: c57cc57ef8d13ff7812c991e85ef31d710da6dfd
   E2E_SERVER_IMAGE: okdp-control-plane-server:e2e
   E2E_GITOPS_IMAGE: okdp-gitops:e2e
-  E2E_LOAD_IMAGES: okdp-control-plane-server:e2e okdp-gitops:e2e
 
 jobs:
   deploy-validation:
@@ -128,7 +130,7 @@ jobs:
           sudo install -m 0755 "${RUNNER_TEMP}/kind" /usr/local/bin/kind
           kind version; helm version; flux version --client
 
-      - name: Clone okdp-control-plane-server, okdp-gitops, okdp-compiler and the service catalogs 📥
+      - name: Clone okdp-control-plane-server, okdp-gitops, okdp-objects-chart and the service catalogs 📥
         run: |
           set -euo pipefail
           fetch() { # <repository> <commit>: ../<repository> at that commit
@@ -139,7 +141,7 @@ jobs:
           }
           fetch okdp-control-plane-server "${OKDP_CONTROL_PLANE_SERVER_REF}"
           fetch okdp-gitops "${OKDP_GITOPS_REF}"
-          fetch okdp-compiler "${OKDP_COMPILER_REF}"
+          fetch okdp-objects-chart "${OKDP_OBJECTS_CHART_REF}"
           # The catalogs, at the commit gitops/catalogs.yaml pins, not shallow:
           # e2e-kind.sh pushes them to the cluster's Forgejo (yq is preinstalled).
           yq -r '.repositories[] | [.name, .ref] | @tsv' gitops/catalogs.yaml \
@@ -161,11 +163,10 @@ jobs:
           set -euo pipefail
           (cd ../okdp-gitops && go build -o "${RUNNER_TEMP}/bin/okdp-gitops" ./cmd/okdp-gitops)
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
-          # The build contexts the Dockerfiles copy from.
-          docker build -t "${E2E_GITOPS_IMAGE}" --build-context okdp-compiler=../okdp-compiler ../okdp-gitops
+          # The server's Dockerfile copies okdp-gitops from a build context.
+          docker build -t "${E2E_GITOPS_IMAGE}" ../okdp-gitops
           docker build -t "${E2E_SERVER_IMAGE}" \
-            --build-context okdp-compiler=../okdp-compiler --build-context okdp-gitops=../okdp-gitops \
-            ../okdp-control-plane-server
+            --build-context okdp-gitops=../okdp-gitops ../okdp-control-plane-server
 
       - name: Deploy with Argo CD 🚀
         run: scripts/e2e-kind.sh up argocd
